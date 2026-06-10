@@ -1,10 +1,12 @@
 using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Ecommerce.Api.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/v1/produtos")]
 public class ProdutosController : ControllerBase
 {

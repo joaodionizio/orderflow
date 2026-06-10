@@ -13,6 +13,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<Produto> Produtos => Set<Produto>();
     public DbSet<Pedido> Pedidos => Set<Pedido>();
     public DbSet<ItemPedido> ItensPedido => Set<ItemPedido>();
+    public DbSet<Usuario> Usuarios => Set<Usuario>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -80,6 +81,26 @@ public class ApplicationDbContext : DbContext
             entity.Property(item => item.PrecoUnitario)
                 .HasColumnType("decimal(18,2)")
                 .IsRequired();
+        });
+
+        modelBuilder.Entity<Usuario>(entity =>
+        {
+            entity.HasKey(usuario => usuario.Id);
+
+            entity.Property(usuario => usuario.Nome)
+                .HasMaxLength(150)
+                .IsRequired();
+
+            entity.Property(usuario => usuario.Email)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(usuario => usuario.SenhaHash)
+                .HasMaxLength(500)
+                .IsRequired();
+
+            entity.HasIndex(usuario => usuario.Email)
+                .IsUnique();
         });
     }
 }
