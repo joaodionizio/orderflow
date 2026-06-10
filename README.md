@@ -1,19 +1,21 @@
 # Ecommerce API
 
-API REST desenvolvida em ASP.NET Core para gerenciamento de compradores, produtos e pedidos de um e-commerce.
+API REST em ASP.NET Core para gerenciamento de compradores, produtos e pedidos de um e-commerce.
 
-O objetivo do projeto foi atender aos requisitos propostos no desafio técnico, implementando regras de negócio, persistência com SQL Server e uma estrutura organizada em camadas.
+O projeto usa uma arquitetura simples em camadas, com regras de negócio nos services, persistência com Entity Framework Core e SQL Server via Docker Compose.
 
-## Tecnologias Utilizadas
+## Tecnologias
 
 * .NET 8
 * ASP.NET Core Web API
 * Entity Framework Core 8
 * SQL Server 2022
-* Docker Compose para SQL Server
+* Docker Compose
 * Swagger
+* xUnit
+* JWT Bearer
 
-## Estrutura Do Projeto
+## Estrutura
 
 ```text
 src
@@ -21,50 +23,91 @@ src
 ├── Ecommerce.Application
 ├── Ecommerce.Domain
 └── Ecommerce.Infrastructure
+
+tests
+├── Ecommerce.Domain.Tests
+└── Ecommerce.Tests
 ```
 
-### Ecommerce.Api
+## Como Rodar
 
-Responsável pelos endpoints da API, configuração do Swagger, health check e middleware global de exceções.
+Suba o SQL Server:
 
-### Ecommerce.Application
+```bash
+docker compose up -d
+```
 
-Contém os DTOs, interfaces e exceções da aplicação.
+Restaure as dependências:
 
-### Ecommerce.Domain
+```bash
+dotnet restore Ecommerce.sln
+```
 
-Contém as entidades, enums e regras do domínio.
+Execute a API:
 
-### Ecommerce.Infrastructure
+```bash
+dotnet run --project src/Ecommerce.Api
+```
 
-Contém o Entity Framework Core, DbContext, migrations e implementações dos serviços.
+As migrations são aplicadas automaticamente na inicialização da aplicação.
 
-## Regras De Negócio
+Swagger:
 
-### Pedido
+```text
+http://localhost:5115/swagger
+```
 
-* Todo pedido deve possuir um comprador válido.
-* Todo pedido deve possuir pelo menos um item.
-* Cada item deve possuir quantidade maior que zero.
-* Cada item deve possuir um produto válido.
-* O produto informado no item deve existir.
-* Apenas pedidos iniciados podem ser excluídos.
+Health check:
 
-### Produto
+```http
+GET /health
+```
 
-* Nome obrigatório.
-* Preço deve ser maior que zero.
-* Nome limitado a 150 caracteres.
+## Autenticação
 
-### Comprador
+Os endpoints de compradores, produtos e pedidos exigem JWT. Os endpoints de autenticação ficam abertos.
 
-* Nome obrigatório.
-* E-mail obrigatório e com formato válido.
-* Nome limitado a 150 caracteres.
-* E-mail limitado a 200 caracteres.
-* E-mail não pode ser duplicado.
+### Registrar Usuário
 
-### Fluxo De Status
+```http
+POST /api/v1/auth/registrar
+Content-Type: application/json
+
+{
+  "nome": "João",
+  "email": "joao@email.com",
+  "senha": "123456"
+}
+```
+
+### Login
+
+```http
+POST /api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "joao@email.com",
+  "senha": "123456"
+}
+```
+
+Resposta:
+
+```json
+{
+  "token": "jwt-gerado",
+  "expiraEm": "2026-06-10T15:00:00Z"
+}
+```
+
+No Swagger, clique em **Authorize** e informe:
+
+```text
+Bearer seu-token-jwt
+```
+
+## Pedidos
 
 Status disponíveis:
 
@@ -77,94 +120,50 @@ Fluxo permitido:
 
 ```text
 Iniciado -> Processado -> Enviado
-```
-
-Também é permitido:
-
-```text
 Iniciado -> Cancelado
 Processado -> Cancelado
 ```
 
-Restrições implementadas:
+Regras principais:
 
-* Apenas pedidos iniciados podem ser alterados.
-* Apenas pedidos iniciados podem ser processados.
+* Todo pedido deve possuir comprador válido.
+* Todo pedido deve possuir pelo menos um item.
+* Cada item deve possuir produto válido.
+* A quantidade do item deve ser maior que zero.
+* Apenas pedidos iniciados podem ser alterados ou excluídos.
 * Apenas pedidos processados podem ser enviados.
-* Apenas pedidos iniciados ou processados podem ser cancelados.
 
-## Como Executar
-
-### 1. Subir o banco de dados
-
-```bash
-docker compose up -d
-```
-
-O projeto utiliza SQL Server em Docker.
-
-Credenciais utilizadas:
-
-```text
-Usuário: sa
-Senha: DesafioProtech@22
-```
-
-Essas credenciais são destinadas exclusivamente ao ambiente local do desafio.
-
-### 2. Restaurar dependências
-
-```bash
-dotnet restore Ecommerce.sln
-```
-
-### 3. Executar a aplicação
-
-```bash
-dotnet run --project src/Ecommerce.Api
-```
-
-As migrations são aplicadas automaticamente na inicialização da aplicação.
-
-## Testes
-
-Os testes unitários do domínio estão em `tests/Ecommerce.Domain.Tests`.
-
-```bash
-dotnet test tests/Ecommerce.Domain.Tests/Ecommerce.Domain.Tests.csproj
-```
-
-## Swagger
-
-Após executar a aplicação:
-
-```text
-http://localhost:5115/swagger
-```
-
-## Health Check
+### Listagem Com Filtros E Paginação
 
 ```http
-GET /health
+GET /api/v1/pedidos?status=Iniciado&compradorId={guid}&pagina=1&tamanhoPagina=10
+Authorization: Bearer seu-token-jwt
 ```
 
-O health check verifica a API e a conexão com o SQL Server.
+`pagina` usa valor padrão `1`.
 
-Exemplo de resposta:
+`tamanhoPagina` usa valor padrão `10` e limite máximo `50`.
+
+Resposta:
 
 ```json
 {
-  "status": "Healthy",
-  "checks": [
-    {
-      "name": "sqlserver",
-      "status": "Healthy"
-    }
-  ]
+  "items": [],
+  "paginaAtual": 1,
+  "tamanhoPagina": 10,
+  "totalItens": 0,
+  "totalPaginas": 0
 }
 ```
 
 ## Endpoints
+
+### Auth
+
+| Método | Endpoint                  |
+| ------ | ------------------------- |
+| POST   | /api/v1/auth/registrar    |
+| POST   | /api/v1/auth/login        |
 
 ### Compradores
 
@@ -195,29 +194,28 @@ Exemplo de resposta:
 | PATCH  | /api/v1/pedidos/{id}/enviar    |
 | PATCH  | /api/v1/pedidos/{id}/cancelar  |
 
-### Filtros De Pedidos
+## Testes
 
-A listagem de pedidos permite filtro por:
+Execute todos os testes:
 
-* Status
-* Comprador
-
-Exemplos:
-
-```http
-GET /api/v1/pedidos?status=Iniciado
+```bash
+dotnet test
 ```
 
-```http
-GET /api/v1/pedidos?compradorId={guid}
-```
+Há testes unitários para:
+
+* Regras de domínio do pedido.
+* Regras principais de `PedidoService`.
+* Regras principais de `ProdutoService`.
+* Regras principais de `CompradorService`.
+
+Os testes dos services usam banco em memória, sem depender do SQL Server real.
 
 ## Tratamento De Erros
 
-A aplicação possui middleware global para tratamento de exceções.
-Erros inesperados também são registrados em log com método HTTP, caminho da requisição e TraceId.
+A aplicação possui middleware global de exceções.
 
-Retornos implementados:
+Retornos principais:
 
 | Situação                  | Status |
 | ------------------------- | ------ |
@@ -227,23 +225,20 @@ Retornos implementados:
 
 ## Diferenciais Implementados
 
-* Arquitetura em camadas
-* Entity Framework Core
-* SQL Server
-* SQL Server disponível via Docker Compose
-* Swagger
-* Health Check com verificação do SQL Server
-* Middleware global de exceções
-* Filtro de pedidos por status e comprador
-* Migrations automáticas na inicialização
-* Validações declarativas nos DTOs
-* Índice único para e-mail de comprador
-* Retry automático para falhas transitórias do SQL Server
-* Testes unitários das regras de domínio do pedido
+* Paginação na listagem de pedidos.
+* Testes unitários.
+* Autenticação JWT.
+* Docker Compose com SQL Server.
+* Swagger com suporte a Bearer Token.
+* Health Check com verificação do SQL Server.
+* Middleware global de exceções.
+* Migrations automáticas na inicialização.
+* Índice único para e-mail de comprador e usuário.
+* Retry automático para falhas transitórias do SQL Server.
 
 ## Observações Técnicas
 
-* As datas são preenchidas com `DateTime.UtcNow` de forma padronizada.
 * A API usa `Guid` como identificador das entidades.
-* A conexão com SQL Server usa `EnableRetryOnFailure()` para aumentar a resiliência contra falhas temporárias.
-* Os serviços acessam o `ApplicationDbContext` diretamente para manter o escopo do projeto simples.
+* As datas são preenchidas com `DateTime.UtcNow`.
+* Senhas são armazenadas com hash PBKDF2, não em texto puro.
+* Os services acessam o `ApplicationDbContext` diretamente para manter o projeto simples.
