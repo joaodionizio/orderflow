@@ -13,6 +13,7 @@ API REST para gerenciamento de compradores, produtos e pedidos, com foco em regr
 - Tratamento global de exceções
 - Health checks e resiliência de conexão
 - Testes unitários do domínio
+- CI com build e testes automatizados
 - Ambiente local reproduzível com Docker Compose
 
 ## Tecnologias
@@ -24,6 +25,7 @@ API REST para gerenciamento de compradores, produtos e pedidos, com foco em regr
 - Docker Compose
 - Swagger / OpenAPI
 - xUnit
+- GitHub Actions
 
 ## Arquitetura
 
@@ -199,6 +201,10 @@ dotnet test Ecommerce.sln
 
 Os testes atuais cobrem regras centrais do domínio, incluindo transições permitidas de status e cálculo do valor total do pedido.
 
+## Integração contínua
+
+O workflow em `.github/workflows/ci.yml` executa restore, build em Release e testes a cada pull request ou push para `main`.
+
 ## Decisões técnicas
 
 - `Guid` é utilizado como identificador das entidades.
@@ -212,7 +218,7 @@ Os testes atuais cobrem regras centrais do domínio, incluindo transições perm
 
 - [ ] Autenticação e autorização com JWT
 - [ ] Testes de integração da API e persistência
-- [ ] Pipeline de CI com build e testes automatizados
+- [x] Pipeline de CI com build e testes automatizados
 - [ ] Deploy público da API e banco
 - [ ] Melhorar separação entre camada de aplicação e infraestrutura
 - [ ] Observabilidade estruturada e métricas
