@@ -1,19 +1,41 @@
-# Ecommerce API
+# OrderFlow
 
-API REST desenvolvida em ASP.NET Core para gerenciamento de compradores, produtos e pedidos de um e-commerce.
+API REST para gerenciamento de compradores, produtos e pedidos, com foco em regras de negócio, organização em camadas e confiabilidade da aplicação.
 
-O objetivo do projeto foi atender aos requisitos propostos no desafio técnico, implementando regras de negócio, persistência com SQL Server e uma estrutura organizada em camadas.
+> O projeto nasceu como um desafio técnico e foi evoluído para um case de portfólio voltado a backend e engenharia de software.
 
-## Tecnologias Utilizadas
+## O que este projeto demonstra
 
-* .NET 8
-* ASP.NET Core Web API
-* Entity Framework Core 8
-* SQL Server 2022
-* Docker Compose para SQL Server
-* Swagger
+- Modelagem de domínio e regras de negócio para ciclo de vida de pedidos
+- API REST com ASP.NET Core
+- Persistência com Entity Framework Core e SQL Server
+- Paginação e filtros
+- Tratamento global de exceções
+- Health checks e resiliência de conexão
+- Testes unitários do domínio
+- Ambiente local reproduzível com Docker Compose
 
-## Estrutura Do Projeto
+## Tecnologias
+
+- .NET 8
+- ASP.NET Core Web API
+- Entity Framework Core 8
+- SQL Server 2022
+- Docker Compose
+- Swagger / OpenAPI
+- xUnit
+
+## Arquitetura
+
+```mermaid
+flowchart LR
+    Client[Cliente / Swagger] --> API[Ecommerce.Api]
+    API --> APP[Ecommerce.Application]
+    APP --> DOMAIN[Ecommerce.Domain]
+    API --> INFRA[Ecommerce.Infrastructure]
+    INFRA --> DOMAIN
+    INFRA --> DB[(SQL Server)]
+```
 
 ```text
 src
@@ -21,126 +43,101 @@ src
 ├── Ecommerce.Application
 ├── Ecommerce.Domain
 └── Ecommerce.Infrastructure
+
+tests
+└── Ecommerce.Domain.Tests
 ```
 
 ### Ecommerce.Api
 
-Responsável pelos endpoints da API, configuração do Swagger, health check e middleware global de exceções.
+Endpoints HTTP, configuração da aplicação, Swagger, health check e middleware global de exceções.
 
 ### Ecommerce.Application
 
-Contém os DTOs, interfaces e exceções da aplicação.
+DTOs, contratos de serviços e exceções da aplicação.
 
 ### Ecommerce.Domain
 
-Contém as entidades, enums e regras do domínio.
+Entidades, enums e regras do domínio.
 
 ### Ecommerce.Infrastructure
 
-Contém o Entity Framework Core, DbContext, migrations e implementações dos serviços.
+Entity Framework Core, DbContext, migrations e implementações dos serviços.
 
-## Regras De Negócio
+## Domínio de pedidos
 
-### Pedido
-
-* Todo pedido deve possuir um comprador válido.
-* Todo pedido deve possuir pelo menos um item.
-* Cada item deve possuir quantidade maior que zero.
-* Cada item deve possuir um produto válido.
-* O produto informado no item deve existir.
-* Apenas pedidos iniciados podem ser excluídos.
-
-### Produto
-
-* Nome obrigatório.
-* Preço deve ser maior que zero.
-* Nome limitado a 150 caracteres.
-
-### Comprador
-
-* Nome obrigatório.
-* E-mail obrigatório e com formato válido.
-* Nome limitado a 150 caracteres.
-* E-mail limitado a 200 caracteres.
-* E-mail não pode ser duplicado.
-
-### Fluxo De Status
-
-Status disponíveis:
-
-* Iniciado
-* Processado
-* Enviado
-* Cancelado
-
-Fluxo permitido:
+O pedido percorre um fluxo de estados controlado por regras de negócio:
 
 ```text
 Iniciado -> Processado -> Enviado
+    |           |
+    +------> Cancelado
 ```
 
-Também é permitido:
+Regras implementadas:
 
-```text
-Iniciado -> Cancelado
-Processado -> Cancelado
+- Todo pedido deve possuir um comprador válido.
+- Todo pedido deve possuir pelo menos um item.
+- Cada item deve possuir quantidade maior que zero.
+- Cada item deve referenciar um produto existente.
+- Apenas pedidos iniciados podem ser alterados.
+- Apenas pedidos iniciados podem ser processados.
+- Apenas pedidos processados podem ser enviados.
+- Apenas pedidos iniciados ou processados podem ser cancelados.
+- Apenas pedidos iniciados podem ser excluídos.
+
+## Recursos da API
+
+### Compradores
+
+| Método | Endpoint |
+| --- | --- |
+| POST | `/api/v1/compradores` |
+| GET | `/api/v1/compradores` |
+| GET | `/api/v1/compradores/{id}` |
+
+### Produtos
+
+| Método | Endpoint |
+| --- | --- |
+| POST | `/api/v1/produtos` |
+| GET | `/api/v1/produtos` |
+| GET | `/api/v1/produtos/{id}` |
+
+### Pedidos
+
+| Método | Endpoint |
+| --- | --- |
+| POST | `/api/v1/pedidos` |
+| GET | `/api/v1/pedidos` |
+| GET | `/api/v1/pedidos/{id}` |
+| PUT | `/api/v1/pedidos/{id}` |
+| DELETE | `/api/v1/pedidos/{id}` |
+| PATCH | `/api/v1/pedidos/{id}/processar` |
+| PATCH | `/api/v1/pedidos/{id}/enviar` |
+| PATCH | `/api/v1/pedidos/{id}/cancelar` |
+
+### Paginação e filtros
+
+A listagem de pedidos aceita paginação e filtros por status e comprador.
+
+```http
+GET /api/v1/pedidos?pagina=1&tamanhoPagina=10&status=Iniciado
 ```
 
-Restrições implementadas:
-
-* Apenas pedidos iniciados podem ser alterados.
-* Apenas pedidos iniciados podem ser processados.
-* Apenas pedidos processados podem ser enviados.
-* Apenas pedidos iniciados ou processados podem ser cancelados.
-
-## Como Executar
-
-### 1. Subir o banco de dados
-
-```bash
-docker compose up -d
+```http
+GET /api/v1/pedidos?pagina=1&tamanhoPagina=10&compradorId={guid}
 ```
 
-O projeto utiliza SQL Server em Docker.
+## Tratamento de erros
 
-Credenciais utilizadas:
+A aplicação usa middleware global para padronizar falhas da API. Erros inesperados são registrados com método HTTP, caminho da requisição e `TraceId`.
 
-```text
-Usuário: sa
-Senha: DesafioProtech@22
-```
-
-Essas credenciais são destinadas exclusivamente ao ambiente local do desafio.
-
-### 2. Restaurar dependências
-
-```bash
-dotnet restore Ecommerce.sln
-```
-
-### 3. Executar a aplicação
-
-```bash
-dotnet run --project src/Ecommerce.Api
-```
-
-As migrations são aplicadas automaticamente na inicialização da aplicação.
-
-## Testes
-
-Os testes unitários do domínio estão em `tests/Ecommerce.Domain.Tests`.
-
-```bash
-dotnet test tests/Ecommerce.Domain.Tests/Ecommerce.Domain.Tests.csproj
-```
-
-## Swagger
-
-Após executar a aplicação:
-
-```text
-http://localhost:5115/swagger
-```
+| Situação | Status |
+| --- | ---: |
+| Entidade não encontrada | 404 |
+| Regra de negócio inválida | 400 |
+| Erro inesperado | 500 |
 
 ## Health Check
 
@@ -148,9 +145,9 @@ http://localhost:5115/swagger
 GET /health
 ```
 
-O health check verifica a API e a conexão com o SQL Server.
+O endpoint verifica a aplicação e a conexão com o SQL Server.
 
-Exemplo de resposta:
+Exemplo:
 
 ```json
 {
@@ -164,86 +161,62 @@ Exemplo de resposta:
 }
 ```
 
-## Endpoints
+## Como executar
 
-### Compradores
+### 1. Subir o SQL Server
 
-| Método | Endpoint                 |
-| ------ | ------------------------ |
-| POST   | /api/v1/compradores      |
-| GET    | /api/v1/compradores      |
-| GET    | /api/v1/compradores/{id} |
-
-### Produtos
-
-| Método | Endpoint              |
-| ------ | --------------------- |
-| POST   | /api/v1/produtos      |
-| GET    | /api/v1/produtos      |
-| GET    | /api/v1/produtos/{id} |
-
-### Pedidos
-
-| Método | Endpoint                       |
-| ------ | ------------------------------ |
-| POST   | /api/v1/pedidos                |
-| GET    | /api/v1/pedidos                |
-| GET    | /api/v1/pedidos/{id}           |
-| PUT    | /api/v1/pedidos/{id}           |
-| DELETE | /api/v1/pedidos/{id}           |
-| PATCH  | /api/v1/pedidos/{id}/processar |
-| PATCH  | /api/v1/pedidos/{id}/enviar    |
-| PATCH  | /api/v1/pedidos/{id}/cancelar  |
-
-### Filtros De Pedidos
-
-A listagem de pedidos permite filtro por:
-
-* Status
-* Comprador
-
-Exemplos:
-
-```http
-GET /api/v1/pedidos?status=Iniciado
+```bash
+docker compose up -d
 ```
 
-```http
-GET /api/v1/pedidos?compradorId={guid}
+As credenciais presentes no Docker Compose são destinadas exclusivamente ao ambiente local de desenvolvimento.
+
+### 2. Restaurar dependências
+
+```bash
+dotnet restore Ecommerce.sln
 ```
 
-## Tratamento De Erros
+### 3. Executar a API
 
-A aplicação possui middleware global para tratamento de exceções.
-Erros inesperados também são registrados em log com método HTTP, caminho da requisição e TraceId.
+```bash
+dotnet run --project src/Ecommerce.Api
+```
 
-Retornos implementados:
+As migrations são aplicadas automaticamente na inicialização.
 
-| Situação                  | Status |
-| ------------------------- | ------ |
-| Entidade não encontrada   | 404    |
-| Regra de negócio inválida | 400    |
-| Erro inesperado           | 500    |
+### 4. Abrir o Swagger
 
-## Diferenciais Implementados
+```text
+http://localhost:5115/swagger
+```
 
-* Arquitetura em camadas
-* Entity Framework Core
-* SQL Server
-* SQL Server disponível via Docker Compose
-* Swagger
-* Health Check com verificação do SQL Server
-* Middleware global de exceções
-* Filtro de pedidos por status e comprador
-* Migrations automáticas na inicialização
-* Validações declarativas nos DTOs
-* Índice único para e-mail de comprador
-* Retry automático para falhas transitórias do SQL Server
-* Testes unitários das regras de domínio do pedido
+## Testes
 
-## Observações Técnicas
+```bash
+dotnet test Ecommerce.sln
+```
 
-* As datas são preenchidas com `DateTime.UtcNow` de forma padronizada.
-* A API usa `Guid` como identificador das entidades.
-* A conexão com SQL Server usa `EnableRetryOnFailure()` para aumentar a resiliência contra falhas temporárias.
-* Os serviços acessam o `ApplicationDbContext` diretamente para manter o escopo do projeto simples.
+Os testes atuais cobrem regras centrais do domínio, incluindo transições permitidas de status e cálculo do valor total do pedido.
+
+## Decisões técnicas
+
+- `Guid` é utilizado como identificador das entidades.
+- Datas são persistidas em UTC.
+- O preço unitário é copiado para o item do pedido no momento da criação, preservando o valor histórico da compra.
+- Consultas de leitura usam `AsNoTracking()` quando apropriado.
+- A conexão com SQL Server usa `EnableRetryOnFailure()` para falhas transitórias.
+- E-mail de comprador possui índice único no banco.
+
+## Roadmap
+
+- [ ] Autenticação e autorização com JWT
+- [ ] Testes de integração da API e persistência
+- [ ] Pipeline de CI com build e testes automatizados
+- [ ] Deploy público da API e banco
+- [ ] Melhorar separação entre camada de aplicação e infraestrutura
+- [ ] Observabilidade estruturada e métricas
+
+## Autor
+
+Desenvolvido por **João Luís Dionízio dos Santos**.
