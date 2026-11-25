@@ -1,17 +1,20 @@
 using System.Text.Json;
-using System.Text;
 using Ecommerce.Api.Middlewares;
 using Ecommerce.Infrastructure;
+using Ecommerce.Infrastructure.Configuration;
 using Ecommerce.Infrastructure.Data;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var connectionString = SqlServerConfiguration.GetRequiredConnectionString(builder.Configuration);
+var jwt = JwtConfiguration.Load(builder.Configuration);
+
+builder.Services.AddSingleton(jwt);
 builder.Services.AddControllers(options =>
 {
     var mensagens = options.ModelBindingMessageProvider;
@@ -53,19 +56,7 @@ builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        var chave = builder.Configuration["Jwt:Chave"];
-
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateIssuerSigningKey = true,
-            ValidateLifetime = true,
-            ValidIssuer = builder.Configuration["Jwt:Issuer"],
-            ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(chave!)),
-            ClockSkew = TimeSpan.Zero
-        };
+        options.TokenValidationParameters = jwt.CreateTokenValidationParameters();
     });
 builder.Services.AddAuthorization();
 builder.Services.AddSwaggerGen(options =>
@@ -97,10 +88,8 @@ builder.Services.AddSwaggerGen(options =>
 });
 builder.Services
     .AddHealthChecks()
-    .AddSqlServer(
-        builder.Configuration.GetConnectionString("DefaultConnection")!,
-        name: "sqlserver");
-builder.Services.AddInfrastructure(builder.Configuration);
+    .AddSqlServer(connectionString, name: "sqlserver");
+builder.Services.AddInfrastructure(connectionString);
 
 var app = builder.Build();
 

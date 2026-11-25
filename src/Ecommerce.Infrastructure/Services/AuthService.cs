@@ -1,16 +1,14 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
-using System.Text;
 using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Exceptions;
 using Ecommerce.Application.Interfaces;
 using Ecommerce.Domain.Entities;
+using Ecommerce.Infrastructure.Configuration;
 using Ecommerce.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using Microsoft.IdentityModel.Tokens;
 
 namespace Ecommerce.Infrastructure.Services;
 
@@ -20,12 +18,12 @@ public class AuthService : IAuthService
     private const int HashSize = 32;
     private const int Iterations = 100_000;
     private readonly ApplicationDbContext _context;
-    private readonly IConfiguration _configuration;
+    private readonly JwtConfiguration _jwt;
 
-    public AuthService(ApplicationDbContext context, IConfiguration configuration)
+    public AuthService(ApplicationDbContext context, JwtConfiguration jwt)
     {
         _context = context;
-        _configuration = configuration;
+        _jwt = jwt;
     }
 
     public async Task RegistrarAsync(RegistrarUsuarioRequest request)
@@ -74,17 +72,7 @@ public class AuthService : IAuthService
 
     private LoginResponse GerarToken(Usuario usuario)
     {
-        var chave = _configuration["Jwt:Chave"];
-
-        if (string.IsNullOrWhiteSpace(chave))
-            throw new InvalidOperationException("A chave JWT não foi configurada.");
-
-        var issuer = _configuration["Jwt:Issuer"];
-        var audience = _configuration["Jwt:Audience"];
-        var expiraMinutos = int.TryParse(_configuration["Jwt:ExpiraMinutos"], out var minutos)
-            ? minutos
-            : 60;
-        var expiraEm = DateTime.UtcNow.AddMinutes(expiraMinutos);
+        var expiraEm = DateTime.UtcNow.AddMinutes(_jwt.ExpirationMinutes);
 
         var claims = new List<Claim>
         {
@@ -93,16 +81,12 @@ public class AuthService : IAuthService
             new(ClaimTypes.Name, usuario.Nome)
         };
 
-        var credenciais = new SigningCredentials(
-            new SymmetricSecurityKey(Encoding.UTF8.GetBytes(chave)),
-            SecurityAlgorithms.HmacSha256);
-
         var token = new JwtSecurityToken(
-            issuer,
-            audience,
+            _jwt.Issuer,
+            _jwt.Audience,
             claims,
             expires: expiraEm,
-            signingCredentials: credenciais);
+            signingCredentials: _jwt.SigningCredentials);
 
         return new LoginResponse
         {

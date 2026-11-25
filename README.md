@@ -144,61 +144,105 @@ A aplicação usa middleware global para padronizar falhas da API. Erros inesper
 ## Health Check
 
 ```http
-GET /api/v1/pedidos?status=Iniciado&compradorId={guid}&pagina=1&tamanhoPagina=10
-Authorization: Bearer seu-token-jwt
+GET /health
 ```
 
-O endpoint verifica a aplicação e a conexão com o SQL Server.
-
-Exemplo:
+O endpoint verifica a conexão com o mesmo SQL Server usado pelo EF Core. Quando a conexão está saudável, retorna HTTP 200 com o seguinte corpo.
 
 ```json
 {
-  "items": [],
-  "paginaAtual": 1,
-  "tamanhoPagina": 10,
-  "totalItens": 0,
-  "totalPaginas": 0
+  "status": "Healthy",
+  "checks": [{ "name": "sqlserver", "status": "Healthy" }]
 }
 ```
 
 ## Como executar
 
-### 1. Subir o SQL Server
+Use o SDK .NET 8 compatível com `global.json`, o Docker com Compose v2 ou superior e o OpenSSL. Execute os comandos abaixo na raiz do repositório, em Bash ou Zsh.
+
+### 1. Configurar e subir o SQL Server
+
+Para um banco local novo, gere uma senha exclusiva e grave-a em um `.env` com permissões restritas. O comando protege um `.env` que já exista. O [`.env.example`](.env.example) descreve a variável esperada.
 
 ```bash
-docker compose up -d
+(
+  set -eC
+  umask 077
+  sql_password="$(openssl rand -hex 24)"
+  printf 'MSSQL_SA_PASSWORD=Aa1-%s\n' "$sql_password" > .env
+)
 ```
 
-As credenciais presentes no Docker Compose são destinadas exclusivamente ao ambiente local de desenvolvimento.
+Para usar uma senha própria, preencha `MSSQL_SA_PASSWORD` no `.env`. Para usar os comandos abaixo, mantenha o formato `VAR=valor` em uma única linha, sem aspas nem comentários na mesma linha. Use uma senha longa com maiúsculas, minúsculas, dígitos e hífens. Em uma instalação com dados existentes, siga a seção de rotação de credenciais antes de trocar a senha no arquivo.
 
-### 2. Restaurar dependências
+O Compose lê o `.env` da raiz para preencher a variável do contêiner. Uma variável homônima exportada no terminal tem precedência. Os comandos abaixo usam o valor do arquivo e validam a configuração sem imprimir a senha. [Interpolação no Docker Compose](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/)
+
+```bash
+unset MSSQL_SA_PASSWORD
+docker compose config --quiet
+docker compose up -d sqlserver
+docker compose ps sqlserver
+```
+
+O banco fica acessível no host em `127.0.0.1:1433` e persiste os dados no volume `sqlserver_data`. Aguarde a mensagem de que o SQL Server está pronto para conexões antes de iniciar a API.
+
+```bash
+docker compose logs --tail=50 sqlserver
+```
+
+#### macOS com Apple Silicon
+
+O Compose mantém `platform: linux/amd64` para a imagem do SQL Server 2022. No Docker Desktop, a opção **Use Rosetta for x86_64/amd64 emulation on Apple Silicon** está disponível com o **Apple Virtualization framework**. A Microsoft oferece suporte aos contêineres do SQL Server em Linux x86-64 e não oferece suporte à execução por emulação. Se o banco local falhar sob emulação, execute a API normalmente no Mac e configure `ConnectionStrings__DefaultConnection` com o endereço e a credencial de um SQL Server em Linux x86-64. Em um servidor remoto, use um certificado confiável e mantenha a validação habilitada. [Configurações do Docker Desktop](https://docs.docker.com/desktop/settings-and-maintenance/settings/) · [Plataformas suportadas pelo SQL Server](https://learn.microsoft.com/en-us/sql/linux/install-upgrade/setup?view=sql-server-ver16)
+
+### 2. Restaurar dependências e executar a API no host
+
+`dotnet run` não carrega o `.env` automaticamente. O ASP.NET Core lê `ConnectionStrings__DefaultConnection` do ambiente do processo e usa a mesma string para o EF Core e o health check. `Jwt__Chave` fornece a chave de assinatura exigida pela autenticação já existente. [Configuração do ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/?view=aspnetcore-8.0)
 
 ```bash
 dotnet restore Ecommerce.sln
+(
+  set -e
+  sql_password="$(sed -n 's/^MSSQL_SA_PASSWORD=//p' .env)"
+  if [ -z "$sql_password" ]; then
+    printf '%s\n' 'Preencha MSSQL_SA_PASSWORD no .env.' >&2
+    exit 1
+  fi
+  Jwt__Chave="${Jwt__Chave:-$(openssl rand -hex 32)}"
+  export Jwt__Chave
+  export ConnectionStrings__DefaultConnection="Server=127.0.0.1,1433;Database=EcommerceDb;User ID=sa;Password=${sql_password};Encrypt=True;TrustServerCertificate=True"
+  dotnet run --project src/Ecommerce.Api --launch-profile http
+)
 ```
 
-### 3. Executar a API
+O exemplo usa `sa` e `TrustServerCertificate=True` para o contêiner local com certificado autossinado. Fora desse ambiente, forneça as duas variáveis pelo gerenciador de segredos, use um login apropriado para a API e configure a validação do certificado.
+
+Para HS256, gere a chave a partir de pelo menos 32 bytes de aleatoriedade criptográfica, como faz `openssl rand -hex 32` no exemplo. A API mede o comprimento da chave em bytes UTF-8. Caracteres multibyte ocupam mais de um byte, e o comprimento por si só não indica a entropia da chave. Emissão e validação usam a mesma chave carregada no startup. A chave gerada pelo exemplo muda a cada execução se nenhuma chave for fornecida, o que invalida os tokens anteriores. Para manter os tokens entre reinícios, forneça a mesma chave de desenvolvimento por um gerenciador de segredos. [Requisitos do HS256](https://datatracker.ietf.org/doc/html/rfc7518#section-3.2) · [Entropia da chave](https://datatracker.ietf.org/doc/html/rfc8725#section-3.5)
+
+Ao conectar a API a outro SQL Server, forneça a string completa e a chave JWT no ambiente e execute o mesmo comando `dotnet run`. Antes das migrations, a API verifica a sintaxe da conexão e exige um servidor em `Data Source` ou `Server`. Ela também rejeita uma chave ausente, em branco ou com menos de 32 bytes em UTF-8. As mensagens indicam a configuração a corrigir sem incluir seu conteúdo.
+
+### 3. Verificar a aplicação
+
+Abra o Swagger em <http://localhost:5115/swagger>. Em outro terminal, consulte o health check.
 
 ```bash
-dotnet run --project src/Ecommerce.Api
+curl --fail --show-error http://localhost:5115/health
 ```
 
-As migrations são aplicadas automaticamente na inicialização.
+### Rotação de credenciais anteriormente versionadas
 
-### 4. Abrir o Swagger
-
-```text
-http://localhost:5115/swagger
-```
+- Trate a senha do SQL Server e a chave JWT que foram versionadas como expostas. Substitua-as em todos os ambientes onde foram usadas ou reutilizadas. A troca da chave JWT invalida os tokens assinados com a chave anterior.
+- Em um volume existente, a senha efetiva de `sa` está gravada no SQL Server. Alterar `MSSQL_SA_PASSWORD` no `.env` por si só não troca essa senha. Conecte-se com a credencial administrativa atual e faça a rotação com `ALTER LOGIN` em uma sessão privada. Depois, atualize o `.env` e a string de conexão da API e execute novamente `docker compose up -d sqlserver` com o mesmo projeto Compose. Mantenha o volume existente. [Volumes e credenciais de contêineres SQL Server](https://learn.microsoft.com/en-us/sql/linux/sql-server-linux-docker-container-troubleshooting?view=sql-server-ver16)
+- A remoção dos valores dos arquivos atuais não os apaga do histórico Git, de clones ou de forks. Trate a eventual limpeza do histórico como uma operação coordenada, após a rotação. O Git já ignora `.env` e variantes locais como `.env.local`, com exceção do modelo `.env.example`.
 
 ## Testes
 
 ```bash
-dotnet test Ecommerce.sln
+dotnet restore Ecommerce.sln
+dotnet build Ecommerce.sln --no-restore
+dotnet test Ecommerce.sln --no-build
 ```
 
-Os testes atuais cobrem regras centrais do domínio, incluindo transições permitidas de status e cálculo do valor total do pedido.
+Os testes cobrem regras do domínio, serviços, validação das configurações obrigatórias e emissão e verificação de tokens JWT. A suíte usa o provedor EF Core em memória para os testes de serviço.
 
 ## Integração contínua
 
