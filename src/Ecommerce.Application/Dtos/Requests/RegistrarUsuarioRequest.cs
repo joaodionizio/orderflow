@@ -1,7 +1,9 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace Ecommerce.Application.Dtos.Requests;
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public class RegistrarUsuarioRequest
 {
     [Required(ErrorMessage = "O nome do usuário é obrigatório.")]

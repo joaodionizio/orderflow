@@ -85,6 +85,9 @@ public class ApplicationDbContext : DbContext
 
         modelBuilder.Entity<Usuario>(entity =>
         {
+            entity.ToTable("Usuarios", table => table.HasCheckConstraint(
+                "CK_Usuarios_Perfil", "[Perfil] COLLATE Latin1_General_100_BIN2 IN (N'Admin', N'Operator') AND DATALENGTH([Perfil]) = DATALENGTH(RTRIM([Perfil]))"));
+
             entity.HasKey(usuario => usuario.Id);
 
             entity.Property(usuario => usuario.Nome)
@@ -98,6 +101,10 @@ public class ApplicationDbContext : DbContext
             entity.Property(usuario => usuario.SenhaHash)
                 .HasMaxLength(500)
                 .IsRequired();
+
+            entity.Property(usuario => usuario.Perfil)
+                .HasConversion<string>()
+                .HasMaxLength(8);
 
             entity.HasIndex(usuario => usuario.Email)
                 .IsUnique();

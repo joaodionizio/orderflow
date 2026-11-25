@@ -1,3 +1,4 @@
+using System.Data;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
@@ -6,9 +7,11 @@ using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Exceptions;
 using Ecommerce.Application.Interfaces;
 using Ecommerce.Domain.Entities;
+using Ecommerce.Domain.Enums;
 using Ecommerce.Infrastructure.Configuration;
 using Ecommerce.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Ecommerce.Infrastructure.Services;
 
@@ -28,6 +31,48 @@ public class AuthService : IAuthService
 
     public async Task RegistrarAsync(RegistrarUsuarioRequest request)
     {
+        var usuario = CriarUsuario(request, PerfilUsuario.Operator);
+        await GarantirEmailDisponivelAsync(usuario.Email);
+        _context.Usuarios.Add(usuario);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task ProvisionarPrimeiroAdminAsync(RegistrarUsuarioRequest request)
+    {
+        if (request.Senha is not { Length: >= 15 })
+            throw new RegraDeNegocioException("A senha do administrador deve possuir pelo menos 15 caracteres.");
+
+        var usuario = CriarUsuario(request, PerfilUsuario.Admin);
+        var strategy = _context.Database.CreateExecutionStrategy();
+
+        try
+        {
+            await strategy.ExecuteInTransactionAsync(
+                async cancellationToken =>
+                {
+                    if (await _context.Usuarios.AnyAsync(u => u.Perfil == PerfilUsuario.Admin, cancellationToken))
+                        throw new RegraDeNegocioException("Já existe um administrador. O provisionamento inicial foi encerrado.");
+
+                    await GarantirEmailDisponivelAsync(usuario.Email, cancellationToken);
+                    _context.Usuarios.Add(usuario);
+                    await _context.SaveChangesAsync(acceptAllChangesOnSuccess: false, cancellationToken);
+                },
+                cancellationToken => _context.Usuarios.AsNoTracking().AnyAsync(
+                    u => u.Id == usuario.Id && u.Perfil == PerfilUsuario.Admin, cancellationToken),
+                IsolationLevel.Serializable,
+                CancellationToken.None);
+        }
+        catch
+        {
+            _context.Entry(usuario).State = EntityState.Detached;
+            throw;
+        }
+
+        _context.ChangeTracker.AcceptAllChanges();
+    }
+
+    private static Usuario CriarUsuario(RegistrarUsuarioRequest request, PerfilUsuario perfil)
+    {
         if (string.IsNullOrWhiteSpace(request.Nome))
             throw new RegraDeNegocioException("O nome do usuário é obrigatório.");
 
@@ -37,24 +82,21 @@ public class AuthService : IAuthService
         if (string.IsNullOrWhiteSpace(request.Senha))
             throw new RegraDeNegocioException("A senha é obrigatória.");
 
-        var email = request.Email.Trim().ToLowerInvariant();
-        var emailJaCadastrado = await _context.Usuarios
-            .AnyAsync(usuario => usuario.Email == email);
-
-        if (emailJaCadastrado)
-            throw new RegraDeNegocioException("Já existe um usuário cadastrado com este e-mail.");
-
-        var usuario = new Usuario
+        return new Usuario
         {
             Id = Guid.NewGuid(),
             Nome = request.Nome.Trim(),
-            Email = email,
+            Email = request.Email.Trim().ToLowerInvariant(),
             SenhaHash = GerarHash(request.Senha),
+            Perfil = perfil,
             DataCriacao = DateTime.UtcNow
         };
+    }
 
-        _context.Usuarios.Add(usuario);
-        await _context.SaveChangesAsync();
+    private async Task GarantirEmailDisponivelAsync(string email, CancellationToken cancellationToken = default)
+    {
+        if (await _context.Usuarios.AnyAsync(usuario => usuario.Email == email, cancellationToken))
+            throw new RegraDeNegocioException("Já existe um usuário cadastrado com este e-mail.");
     }
 
     public async Task<LoginResponse> LoginAsync(LoginRequest request)
@@ -80,6 +122,9 @@ public class AuthService : IAuthService
             new(JwtRegisteredClaimNames.Email, usuario.Email),
             new(ClaimTypes.Name, usuario.Nome)
         };
+
+        if (usuario.Perfil is { } perfil)
+            claims.Add(new Claim("role", perfil.ToString()));
 
         var token = new JwtSecurityToken(
             _jwt.Issuer,

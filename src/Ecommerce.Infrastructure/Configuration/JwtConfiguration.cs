@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
@@ -53,6 +54,7 @@ public sealed class JwtConfiguration
         ValidIssuer = Issuer,
         ValidAudience = Audience,
         IssuerSigningKey = SigningCredentials.Key,
+        RoleClaimType = ClaimTypes.Role,
         ClockSkew = TimeSpan.Zero
     };
 }

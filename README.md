@@ -1,6 +1,6 @@
 # OrderFlow
 
-API REST para gerenciamento de compradores, produtos e pedidos, com foco em regras de negócio, organização em camadas e confiabilidade da aplicação.
+API REST corporativa interna para gerenciamento de compradores, produtos e pedidos, com foco em regras de negócio, organização em camadas e confiabilidade da aplicação. Contas representam funcionários. Compradores são entidades de negócio independentes.
 
 > O projeto nasceu como um desafio técnico e foi evoluído para um case de portfólio voltado a backend e engenharia de software.
 
@@ -89,6 +89,17 @@ Regras implementadas:
 - Apenas pedidos iniciados podem ser excluídos.
 
 ## Recursos da API
+
+### Autenticação e perfis
+
+| Ação | Anônimo | Sem perfil | Operator | Admin |
+| --- | --- | --- | --- | --- |
+| `POST /api/v1/auth/login` com credenciais válidas | Sim | Sim | Sim | Sim |
+| `POST /api/v1/auth/registrar` | 401 | 403 | 403 | 204 |
+| Operações de compradores, produtos e pedidos | 401 | 403 | Sim | Sim |
+| `GET /health` | Sim | Sim | Sim | Sim |
+
+O cadastro recebe `nome`, `email` e `senha`. O servidor provisiona sempre um `Operator` e rejeita campos extras, incluindo `role` e `perfil`. O login retorna o token JWT em `token` e a validade em `expiraEm`. Use `Authorization: Bearer <token>` nas rotas protegidas. No Swagger em desenvolvimento, use **Authorize** para informar o JWT e consulte os perfis exigidos por operação. Tokens ausentes ou inválidos recebem `401` nas rotas protegidas. Um token válido sem o perfil exigido recebe `403`.
 
 ### Compradores
 
@@ -234,6 +245,23 @@ curl --fail --show-error http://localhost:5115/health
 - Em um volume existente, a senha efetiva de `sa` está gravada no SQL Server. Alterar `MSSQL_SA_PASSWORD` no `.env` por si só não troca essa senha. Conecte-se com a credencial administrativa atual e faça a rotação com `ALTER LOGIN` em uma sessão privada. Depois, atualize o `.env` e a string de conexão da API e execute novamente `docker compose up -d sqlserver` com o mesmo projeto Compose. Mantenha o volume existente. [Volumes e credenciais de contêineres SQL Server](https://learn.microsoft.com/en-us/sql/linux/sql-server-linux-docker-container-troubleshooting?view=sql-server-ver16)
 - A remoção dos valores dos arquivos atuais não os apaga do histórico Git, de clones ou de forks. Trate a eventual limpeza do histórico como uma operação coordenada, após a rotação. O Git já ignora `.env` e variantes locais como `.env.local`, com exceção do modelo `.env.example`.
 
+### Provisionar o primeiro administrador
+
+1. Use um terminal privado com a configuração do ambiente de destino. Aplique as migrations antes do provisionamento. O startup normal da API já as aplica e pode ser executado em rede privada para preparar o banco.
+2. Execute o comando abaixo. Confira o servidor e o banco exibidos. Informe nome, um e-mail de funcionário ainda não cadastrado e uma senha exclusiva de pelo menos 15 caracteres. A senha é solicitada duas vezes com a digitação oculta.
+
+   ```bash
+   dotnet run --no-launch-profile --project src/Ecommerce.Api -- provision-admin
+   ```
+
+3. Faça login com a nova conta e use seu token para provisionar operadores. O comando encerra após a tentativa, sem servir HTTP. Ele exige um terminal interativo, recebe os dados por prompt e bloqueia a criação se já existir um administrador. Uma execução com e-mail já cadastrado falha sem alterar aquela conta.
+
+### Contas e tokens anteriores à atualização
+
+A migration `AdicionarPerfilAosUsuarios` preserva IDs, dados cadastrais e hashes. Como o cadastro anterior era público, todas as contas já existentes ficam com `Perfil = NULL` e podem autenticar, mas recebem JWT sem role e não podem operar nem provisionar. Um responsável pelo banco deve conferir a identidade do funcionário e atribuir `Operator` somente ao registro aprovado, pelo `Id` na tabela `dbo.Usuarios` e apenas enquanto `Perfil IS NULL`. Novos cadastros seguem pelo endpoint do administrador. Após a atribuição, o funcionário precisa fazer login novamente.
+
+Em uma atualização de ambiente, retire de serviço as instâncias da versão antiga antes de liberar a nova, para encerrar o cadastro público em todas as instâncias. Tokens anteriores sem `role` recebem `403` nas rotas protegidas enquanto forem válidos. Tokens expirados recebem `401`. Antes de expor a nova versão a funcionários, conclua a rotação de qualquer chave de assinatura anteriormente exposta que ainda esteja em uso.
+
 ## Testes
 
 ```bash
@@ -242,11 +270,11 @@ dotnet build Ecommerce.sln --no-restore
 dotnet test Ecommerce.sln --no-build
 ```
 
-Os testes cobrem regras do domínio, serviços, validação das configurações obrigatórias e emissão e verificação de tokens JWT. A suíte usa o provedor EF Core em memória para os testes de serviço.
+Os testes de serviço usam EF Core em memória. Para executar também os testes HTTP, de provisionamento e de migration, forneça `ORDERFLOW_TEST_SQLSERVER` com uma string de conexão para uma **instância SQL Server isolada**, com permissão para criar e excluir bancos. A suíte gera nomes exclusivos `OrderFlowTests_<guid>` para seus bancos e os remove ao final. Sem essa variável, os testes de integração são ignorados localmente e falham no GitHub Actions.
 
 ## Integração contínua
 
-O workflow em `.github/workflows/ci.yml` executa restore, build em Release e testes a cada pull request ou push para `main`.
+O workflow em `.github/workflows/ci.yml` executa restore, build em Release e testes a cada pull request ou push para `main`. O runner sobe um SQL Server descartável com senha gerada para os testes de integração.
 
 ## Decisões técnicas
 
@@ -259,8 +287,8 @@ O workflow em `.github/workflows/ci.yml` executa restore, build em Release e tes
 
 ## Roadmap
 
-- [ ] Autenticação e autorização com JWT
-- [ ] Testes de integração da API e persistência
+- [x] Autenticação JWT e autorização por perfil
+- [x] Testes de integração para autorização, provisionamento e migration de perfis
 - [x] Pipeline de CI com build e testes automatizados
 - [ ] Deploy público da API e banco
 - [ ] Melhorar separação entre camada de aplicação e infraestrutura

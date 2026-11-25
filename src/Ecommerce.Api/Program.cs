@@ -1,5 +1,9 @@
 using System.Text.Json;
+using Ecommerce.Api.Authorization;
+using Ecommerce.Api.Commands;
 using Ecommerce.Api.Middlewares;
+using Ecommerce.Api.OpenApi;
+using Ecommerce.Domain.Enums;
 using Ecommerce.Infrastructure;
 using Ecommerce.Infrastructure.Configuration;
 using Ecommerce.Infrastructure.Data;
@@ -9,7 +13,15 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 
-var builder = WebApplication.CreateBuilder(args);
+var provisionarAdmin = args.FirstOrDefault() == ProvisionarAdminCommand.Nome;
+if (provisionarAdmin && args.Length != 1)
+{
+    Console.Error.WriteLine("Execute provision-admin sem argumentos. Os dados são solicitados no terminal.");
+    Environment.ExitCode = 1;
+    return;
+}
+
+var builder = WebApplication.CreateBuilder(provisionarAdmin ? [] : args);
 
 var connectionString = SqlServerConfiguration.GetRequiredConnectionString(builder.Configuration);
 var jwt = JwtConfiguration.Load(builder.Configuration);
@@ -56,9 +68,16 @@ builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        options.MapInboundClaims = true;
         options.TokenValidationParameters = jwt.CreateTokenValidationParameters();
     });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy(PoliticasDeAcesso.Operacao, policy =>
+        PoliticasDeAcesso.ExigirPerfil(policy, nameof(PerfilUsuario.Admin), nameof(PerfilUsuario.Operator)));
+    options.AddPolicy(PoliticasDeAcesso.Provisionamento, policy =>
+        PoliticasDeAcesso.ExigirPerfil(policy, nameof(PerfilUsuario.Admin)));
+});
 builder.Services.AddSwaggerGen(options =>
 {
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
@@ -71,27 +90,20 @@ builder.Services.AddSwaggerGen(options =>
         Description = "Informe o token JWT."
     });
 
-    options.AddSecurityRequirement(new OpenApiSecurityRequirement
-    {
-        {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference
-                {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
-            },
-            []
-        }
-    });
+    options.OperationFilter<AutorizacaoOperationFilter>();
 });
 builder.Services
     .AddHealthChecks()
     .AddSqlServer(connectionString, name: "sqlserver");
 builder.Services.AddInfrastructure(connectionString);
 
-var app = builder.Build();
+await using var app = builder.Build();
+
+if (provisionarAdmin)
+{
+    Environment.ExitCode = await ProvisionarAdminCommand.ExecutarAsync(app.Services);
+    return;
+}
 
 using (var scope = app.Services.CreateScope())
 {
@@ -134,4 +146,6 @@ app.MapHealthChecks("/health", new HealthCheckOptions
     }
 });
 
-app.Run();
+await app.RunAsync();
+
+public partial class Program { }
