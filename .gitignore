@@ -41,6 +41,4 @@ packages/
 .env.*
 !.env.example
 
-.idea/
-.DS_Store
 __MACOSX/

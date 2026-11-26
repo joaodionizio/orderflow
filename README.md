@@ -83,6 +83,7 @@ Regras implementadas:
 - Cada item deve possuir quantidade maior que zero.
 - Cada item deve referenciar um produto existente.
 - Apenas pedidos iniciados podem ser alterados.
+- Ao editar um pedido iniciado, a API substitui todos os itens por novos itens com os preços unitários atuais dos produtos, inclusive para produtos que já estavam no pedido.
 - Apenas pedidos iniciados podem ser processados.
 - Apenas pedidos processados podem ser enviados.
 - Apenas pedidos iniciados ou processados podem ser cancelados.
@@ -540,11 +541,15 @@ Os testes unitários de serviços usam EF Core em memória. Para executar també
 
 O workflow em `.github/workflows/ci.yml` executa restore, build em Release e testes a cada pull request ou push para `main`. O runner sobe um SQL Server descartável com senha gerada para os testes de integração.
 
+## Contribuição
+
+Consulte o [guia de contribuição](CONTRIBUTING.md) para conhecer as convenções do projeto e os critérios de conclusão.
+
 ## Decisões técnicas
 
 - `Guid` é utilizado como identificador das entidades.
 - Datas são persistidas em UTC.
-- O preço unitário é copiado para o item do pedido no momento da criação, preservando o valor histórico da compra.
+- Cada item armazena o preço unitário vigente quando é criado, inclusive quando os itens são recriados na edição de um pedido iniciado.
 - Consultas de leitura usam `AsNoTracking()` quando apropriado.
 - A conexão com SQL Server usa `EnableRetryOnFailure()` para falhas transitórias.
 - E-mail de comprador possui índice único no banco.
@@ -554,6 +559,7 @@ O workflow em `.github/workflows/ci.yml` executa restore, build em Release e tes
 - [x] Autenticação JWT e autorização por perfil
 - [x] Testes de integração para autorização, provisionamento e migration de perfis
 - [x] Pipeline de CI com build e testes automatizados
+- [ ] Decidir na Fase 02 se a edição de pedidos iniciados deve manter os preços registrados ou aplicar os preços atuais dos produtos.
 - [ ] Deploy público da API e banco
 - [ ] Melhorar separação entre camada de aplicação e infraestrutura
 - [ ] Observabilidade estruturada e métricas
