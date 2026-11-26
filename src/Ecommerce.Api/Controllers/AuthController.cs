@@ -1,10 +1,12 @@
 using Ecommerce.Api.Authorization;
+using Ecommerce.Api.RateLimiting;
 using Ecommerce.Api.Responses;
 using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Ecommerce.Api.Controllers;
 
@@ -35,6 +37,8 @@ public class AuthController : ControllerBase
 
     [HttpPost("login")]
     [AllowAnonymous]
+    [EnableRateLimiting(LimitesHttp.Login)]
+    [ServiceFilter(typeof(LimiteDeIdentificadorLoginFilter))]
     [ProducesResponseType<LoginResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest, "application/problem+json")]
     [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status401Unauthorized, "application/json")]

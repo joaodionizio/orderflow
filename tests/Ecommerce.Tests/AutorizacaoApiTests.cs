@@ -486,6 +486,15 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
         var pedidos = paths.GetProperty("/api/v1/pedidos").GetProperty("get");
         Assert.Equal("Perfil Admin ou Operator obrigatório.", pedidos.GetProperty("description").GetString());
 
+        foreach (var operacao in new[] { login, cadastro, pedidos })
+        {
+            var excesso = operacao.GetProperty("responses").GetProperty("429");
+            Assert.True(excesso.GetProperty("content").TryGetProperty("application/json", out _));
+            var cabecalhos = excesso.GetProperty("headers");
+            Assert.True(cabecalhos.TryGetProperty("Retry-After", out _));
+            Assert.True(cabecalhos.TryGetProperty("Cache-Control", out _));
+        }
+
         static string? EsquemaDoDesafio(JsonElement resposta) => resposta
             .GetProperty("headers").GetProperty("WWW-Authenticate").GetProperty("schema").GetProperty("enum")[0].GetString();
     }
@@ -535,7 +544,12 @@ public sealed class AutorizacaoApiFixture : IAsyncLifetime
             await auth.RegistrarAsync(operador);
         }
 
-        _factory = new ApiFactory(Database.Configuration);
+        // As regressões compartilham host e sujeitos. Os testes de limites criam hosts com cotas próprias.
+        _factory = new ApiFactory(new Dictionary<string, string?>(Database.Configuration)
+        {
+            ["RateLimiting:CadastroPorAdmin"] = "100",
+            ["RateLimiting:LoginPorOrigem"] = "100"
+        });
         Client = _factory.CreateClient(new WebApplicationFactoryClientOptions
         {
             BaseAddress = new Uri("https://localhost"),

@@ -115,6 +115,36 @@ O cadastro remove espaços das extremidades do e-mail e o converte para minúscu
 
 Os logs HTTP registram conflitos e falhas inesperadas de autenticação por operação e ID de rastreio. Falhas de persistência, inclusive em outras rotas, incluem o tipo da exceção, a causa e o código SQL quando disponível. A configuração do EF Core omite seis eventos cujas exceções podem conter dados rejeitados em mensagens do servidor. As categorias de log continuam disponíveis. [Logging do EF Core](https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/extensions-logging)
 
+### Limites de requisições
+
+Os valores abaixo são defaults iniciais para uma instância da API interna. Os limites de produção exigem testes de carga com a capacidade do host, a latência do SQL Server e o tráfego esperado. A configuração é lida e validada na inicialização. Para sobrescrever um valor, use a seção `RateLimiting` ou uma variável como `RateLimiting__LoginPorOrigem`. As cotas de frequência aceitam de 1 a 100.000 requisições por janela e as de concorrência aceitam de 1 a 1.024 requisições simultâneas.
+
+| Chave em `RateLimiting` | Padrão | Escopo |
+| --- | ---: | --- |
+| `JanelaSegundos` | 60 | Duração das janelas de frequência. Aceita de 1 a 3.600 segundos. |
+| `GlobalPorJanela` | 1.200 | Requisições da API por instância, incluindo tentativas anônimas que passam pela cota de origem quando aplicável. |
+| `GlobalConcorrente` | 32 | Requisições da API em andamento por instância. |
+| `LoginPorOrigem` | 20 | Tentativas por endereço de origem por janela. |
+| `LoginPorIdentificador` | 5 | Tentativas com entrada válida por e-mail normalizado por janela, mesmo para contas inexistentes. |
+| `LoginConcorrente` | 4 | Logins em andamento por instância, dentro do limite global. |
+| `CadastroPorAdmin` | 10 | Solicitações de cadastro por administrador por janela. |
+| `OperacoesPorUsuario` | 120 | Chamadas de pedidos, compradores e produtos por usuário por janela, somadas entre as rotas. |
+| `SaudePorJanela` | 30 | Sondas de `/health` por instância por janela, com orçamento próprio. |
+| `SaudeConcorrente` | 1 | Sondas em andamento por instância. |
+| `MaximoChavesPorJanela` | 1.024 | Máximo de chaves em cada tabela de origens, identificadores de login, administradores e operadores. Aceita até 100.000. |
+
+Os limites de frequência usam janelas fixas com relógio monotônico. Esse modelo admite rajadas próximas à renovação da janela. A concorrência usa o limitador nativo do ASP.NET Core e rejeita o excedente imediatamente. O teto global de 32 restringe o trabalho simultâneo, e o teto de quatro logins limita a pressão das 600 mil iterações de PBKDF2 sobre as outras operações. O orçamento de saúde limita o trabalho do SQL Server sem disputar as cotas da API.
+
+O roteamento identifica login e saúde. A API aplica os limites de concorrência primeiro, seguidos pela cota de login por origem e pela cota de frequência global ou de saúde. Essas verificações ocorrem antes do Bearer, da autorização e do model binding. Um login recusado pela cota de origem preserva o orçamento global. Operações e cadastro só consomem a cota individual após autorização, usando o GUID da claim `sub` validada. O MVC lê o JSON do login uma vez. Após a validação do DTO, a API aplica a cota por identificador antes de consultar o banco ou executar PBKDF2.
+
+A origem vem de `Connection.RemoteIpAddress`. IPv4 e sua forma mapeada em IPv6 compartilham a mesma cota. Clientes atrás do mesmo NAT ou proxy também podem compartilhar uma cota. Mantenha o encaminhamento automático de cabeçalhos desabilitado até configurar proxies confiáveis. Conexões cujo endereço é desconhecido compartilham uma cota própria.
+
+O identificador de login segue a mesma normalização do serviço de autenticação, removendo espaços das extremidades e convertendo o e-mail para minúsculas. A partição guarda um HMAC-SHA256 calculado com uma chave aleatória independente por processo. Cada tabela guarda até 1.024 chaves por padrão e é limpa na renovação de sua janela. Quando a tabela enche, novas chaves recebem `429` até a renovação e as chaves registradas mantêm suas cotas restantes.
+
+Muitas origens distintas podem preencher a tabela de origens, e tentativas válidas na forma podem preencher a de identificadores ou consumir a cota de um identificador conhecido. Isso pode impedir logins legítimos temporariamente. O tráfego que passa pela cota de origem também pode esgotar a frequência global e afetar outras rotas. Se a cota de saúde se esgotar, sondas legítimas também podem receber `429` até a próxima janela. Para uma API interna, restrinja o acesso às redes autorizadas no firewall ou proxy de entrada existente. Essa medida reduz a exposição sem reiniciar contadores ativos ou ampliar o uso de memória.
+
+Respostas `429 Too Many Requests` incluem `Cache-Control: no-store` e o corpo genérico `{"mensagem":"Muitas requisições. Tente novamente mais tarde."}`. Se uma janela de frequência estiver esgotada, `Retry-After` informa os segundos até sua renovação, arredondados para cima. Rejeições por concorrência omitem o cabeçalho, pois dependem do término de outra chamada. As cotas são locais e reiniciam com o processo. Em múltiplas réplicas, use limites compartilhados no gateway se a política exigir uma cota única.
+
 ### Segurança dos tokens JWT
 
 | Configuração | Requisito |

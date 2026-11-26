@@ -1,5 +1,6 @@
 using Ecommerce.Api.Authorization;
 using Ecommerce.Api.Controllers;
+using Ecommerce.Api.Responses;
 using Ecommerce.Application.Exceptions;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -14,6 +15,7 @@ internal sealed class AutorizacaoOperationFilter : IOperationFilter
 {
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
+        DocumentarLimites(operation, context);
         DocumentarProtecao(operation, context);
 
         if (context.ApiDescription.ActionDescriptor is not ControllerActionDescriptor acao
@@ -40,6 +42,34 @@ internal sealed class AutorizacaoOperationFilter : IOperationFilter
                 Schema = new OpenApiSchema { Type = "string", Enum = [new OpenApiString("no-store")] }
             };
         }
+    }
+
+    private static void DocumentarLimites(OpenApiOperation operation, OperationFilterContext context)
+    {
+        operation.Responses.TryAdd("429", new OpenApiResponse
+        {
+            Description = "Limite de frequência ou de requisições simultâneas atingido.",
+            Content =
+            {
+                ["application/json"] = new OpenApiMediaType
+                {
+                    Schema = context.SchemaGenerator.GenerateSchema(typeof(MensagemDeErroResponse), context.SchemaRepository)
+                }
+            },
+            Headers =
+            {
+                ["Retry-After"] = new OpenApiHeader
+                {
+                    Description = "Segundos até a renovação da janela. Ausente para limites de concorrência.",
+                    Schema = new OpenApiSchema { Type = "integer", Format = "int32", Minimum = 1 }
+                },
+                ["Cache-Control"] = new OpenApiHeader
+                {
+                    Required = true,
+                    Schema = new OpenApiSchema { Type = "string", Enum = [new OpenApiString("no-store")] }
+                }
+            }
+        });
     }
 
     private static void DocumentarProtecao(OpenApiOperation operation, OperationFilterContext context)

@@ -126,7 +126,7 @@ public class AuthService : IAuthService
         {
             Id = Guid.NewGuid(),
             Nome = request.Nome.Trim(),
-            Email = request.Email.Trim().ToLowerInvariant(),
+            Email = EmailDeUsuario.Normalizar(request.Email),
             SenhaHash = HashDeSenha.Gerar(request.Senha),
             Perfil = perfil,
             DataCriacao = DateTime.UtcNow
@@ -142,7 +142,7 @@ public class AuthService : IAuthService
         if (erroSenha is not null)
             throw new RegraDeNegocioException(erroSenha);
 
-        var email = request.Email.Trim().ToLowerInvariant();
+        var email = EmailDeUsuario.Normalizar(request.Email);
         var usuario = await _context.Usuarios
             .AsNoTracking()
             .FirstOrDefaultAsync(usuario => usuario.Email == email);

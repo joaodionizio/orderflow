@@ -3,6 +3,7 @@ using Ecommerce.Api.Authorization;
 using Ecommerce.Api.Commands;
 using Ecommerce.Api.Middlewares;
 using Ecommerce.Api.OpenApi;
+using Ecommerce.Api.RateLimiting;
 using Ecommerce.Domain.Enums;
 using Ecommerce.Infrastructure;
 using Ecommerce.Infrastructure.Configuration;
@@ -27,6 +28,7 @@ var connectionString = SqlServerConfiguration.GetRequiredConnectionString(builde
 var jwt = JwtConfiguration.Load(builder.Configuration);
 
 builder.Services.AddSingleton(jwt);
+builder.Services.AdicionarLimitesHttp(OpcoesDeLimites.Carregar(builder.Configuration));
 builder.Services.AddControllers(options =>
 {
     var mensagens = options.ModelBindingMessageProvider;
@@ -116,7 +118,10 @@ using (var scope = app.Services.CreateScope())
     dbContext.Database.Migrate();
 }
 
+app.UseRouting();
 app.UseMiddleware<ExceptionMiddleware>();
+app.UseRateLimiter();
+app.Use(LimitesHttp.LimitarFrequenciaAsync);
 
 if (app.Environment.IsDevelopment())
 {
@@ -128,6 +133,7 @@ app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.Use(LimitesHttp.LimitarUsuarioAsync);
 
 app.MapControllers();
 app.MapHealthChecks("/health", new HealthCheckOptions
@@ -149,7 +155,7 @@ app.MapHealthChecks("/health", new HealthCheckOptions
         await context.Response.WriteAsync(
             JsonSerializer.Serialize(response));
     }
-});
+}).WithMetadata(LimitesHttp.MarcadorDeSaude);
 
 await app.RunAsync();
 
