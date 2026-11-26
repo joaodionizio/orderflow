@@ -68,8 +68,13 @@ builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        options.MapInboundClaims = true;
+        options.MapInboundClaims = false;
+        options.IncludeErrorDetails = false;
         options.TokenValidationParameters = jwt.CreateTokenValidationParameters();
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = ValidacaoDeClaimsJwt.ValidarAsync
+        };
     });
 builder.Services.AddAuthorization(options =>
 {

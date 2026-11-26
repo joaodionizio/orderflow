@@ -18,6 +18,15 @@ internal sealed class SqlServerFactAttribute : FactAttribute
     }
 }
 
+internal sealed class SqlServerTheoryAttribute : TheoryAttribute
+{
+    public SqlServerTheoryAttribute()
+    {
+        if (SqlServerTestDatabase.PodeIgnorarTestes)
+            Skip = "Defina ORDERFLOW_TEST_SQLSERVER com uma instância SQL Server isolada.";
+    }
+}
+
 internal sealed class SqlServerTestDatabase : IAsyncDisposable
 {
     private static string? ConfiguredConnection => Environment.GetEnvironmentVariable("ORDERFLOW_TEST_SQLSERVER");

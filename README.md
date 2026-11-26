@@ -101,6 +101,25 @@ Regras implementadas:
 
 O cadastro recebe `nome`, `email` e `senha`. O servidor provisiona sempre um `Operator` e rejeita campos extras, incluindo `role` e `perfil`. O login retorna o token JWT em `token` e a validade em `expiraEm`. Use `Authorization: Bearer <token>` nas rotas protegidas. No Swagger em desenvolvimento, use **Authorize** para informar o JWT e consulte os perfis exigidos por operação. Tokens ausentes ou inválidos recebem `401` nas rotas protegidas. Um token válido sem o perfil exigido recebe `403`.
 
+### Segurança dos tokens JWT
+
+| Configuração | Requisito |
+| --- | --- |
+| `Jwt__Issuer` | Emissor obrigatório, com valor não vazio. `appsettings.json` fornece `Ecommerce.Api`. |
+| `Jwt__Audience` | Público obrigatório, com valor não vazio. `appsettings.json` fornece `Ecommerce.Api`. |
+| `Jwt__Chave` | Chave de assinatura obrigatória, com pelo menos 32 bytes em UTF-8. Forneça pelo ambiente ou por um gerenciador de segredos. |
+| `Jwt__ExpiraMinutos` | Inteiro de 1 a 60. O padrão de 60 minutos só vale se a configuração estiver ausente. Um valor vazio é inválido. |
+
+A API valida essas configurações antes das migrations. Aceita exclusivamente `HS256` com assinatura válida. Compara `iss` e `aud` por igualdade ordinal, incluindo capitalização e barras finais. O público deve ser um único valor, como string ou array de um elemento. `exp` é obrigatório e indica o instante a partir do qual o token expira. Quando presente, `nbf` indica o primeiro instante de validade. Ambos usam segundos inteiros desde a época Unix, com tolerância de relógio zero. Falhas de autenticação em rotas protegidas recebem `401`, `WWW-Authenticate: Bearer` e corpo vazio. [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519.html#section-4.1) · [Opções do JWT Bearer no ASP.NET Core](https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.authentication.jwtbearer.jwtbeareroptions?view=aspnetcore-8.0)
+
+O `sub` deve ser uma única string com o GUID persistido do funcionário no formato `D`, diferente de `Guid.Empty`. Claims de identidade ambíguas recebem `401`. A API mantém os nomes originais das claims, com `sub` como identidade e `role` como perfil. `Operacao` exige uma única claim `role` escalar com `Admin` ou `Operator`. `Provisionamento` exige uma única claim `role` escalar com `Admin`. Perfil ausente, múltiplo, desconhecido ou apresentado por alias resulta em `403` nas rotas com essas policies quando o token é válido. Os novos tokens incluem `sub`, `iss`, `aud`, `exp` e, quando aplicável, `role`. Nome e e-mail ficam fora das novas emissões. Tokens anteriores emitidos pela API com essas claims continuam válidos enquanto atendem às regras de validação. Swagger e os fluxos HTTP do repositório usam o token como valor opaco. Integrações que decodificam o JWT precisam usar `sub` para identificar a conta.
+
+`Jwt__ExpiraMinutos` limita a duração na emissão a 60 minutos. Na validação, a API verifica o `exp` assinado, sem recalcular a duração original nem aplicar retroativamente o limite de emissão. Tokens legados com uma duração maior podem permanecer válidos até seu próprio `exp`.
+
+O perfil é registrado no token no momento do login. Após uma mudança no banco, o próximo login reflete o novo perfil. Um token já emitido mantém as permissões anteriores até expirar ou até a troca da chave de assinatura. Um token copiado também pode ser reutilizado nesse intervalo. A API atual não tem revogação individual nem consulta o perfil no banco a cada requisição.
+
+Para rotacionar a chave, gere um segredo independente e coordene a troca em todas as instâncias, retirando de serviço as que usam a chave anterior antes de liberar tráfego para as atualizadas. Cada instância carrega uma única chave na inicialização. Após a troca, tokens assinados com a chave anterior recebem `401` e os funcionários precisam fazer login novamente. [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html#section-3.5)
+
 ### Segurança das senhas
 
 O cadastro de operadores e o provisionamento de administradores usam a mesma política. Novas senhas têm de 15 a 128 pontos de código Unicode e aceitam espaços e frases-senha, sem exigir combinações de tipos de caracteres. Um caractere suplementar conta como um ponto de código. Uma letra e um acento combinante separado contam como dois. Sequências Unicode inválidas são recusadas. A verificação e o hashing usam a senha inteira, incluindo espaços iniciais e finais, sem truncamento nem normalização Unicode. [NIST SP 800-63B-4](https://pages.nist.gov/800-63-4/sp800-63b.html#passwordver)
@@ -230,7 +249,7 @@ O Compose mantém `platform: linux/amd64` para a imagem do SQL Server 2022. No D
 
 ### 2. Restaurar dependências e executar a API no host
 
-`dotnet run` não carrega o `.env` automaticamente. O ASP.NET Core lê `ConnectionStrings__DefaultConnection` do ambiente do processo e usa a mesma string para o EF Core e o health check. `Jwt__Chave` fornece a chave de assinatura exigida pela autenticação já existente. [Configuração do ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/?view=aspnetcore-8.0)
+`dotnet run` não carrega o `.env` automaticamente. O ASP.NET Core lê `ConnectionStrings__DefaultConnection` do ambiente do processo e usa a mesma string para o EF Core e o health check. `Jwt__Chave` fornece a chave de assinatura. O exemplo usa o emissor e o público de `appsettings.json` e o padrão de 60 minutos na ausência de `Jwt__ExpiraMinutos`. [Configuração do ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/?view=aspnetcore-8.0)
 
 ```bash
 dotnet restore Ecommerce.sln
@@ -252,7 +271,7 @@ O exemplo usa `sa` e `TrustServerCertificate=True` para o contêiner local com c
 
 Para HS256, gere a chave a partir de pelo menos 32 bytes de aleatoriedade criptográfica, como faz `openssl rand -hex 32` no exemplo. A API mede o comprimento da chave em bytes UTF-8. Caracteres multibyte ocupam mais de um byte, e o comprimento por si só não indica a entropia da chave. Emissão e validação usam a mesma chave carregada no startup. A chave gerada pelo exemplo muda a cada execução se nenhuma chave for fornecida, o que invalida os tokens anteriores. Para manter os tokens entre reinícios, forneça a mesma chave de desenvolvimento por um gerenciador de segredos. [Requisitos do HS256](https://datatracker.ietf.org/doc/html/rfc7518#section-3.2) · [Entropia da chave](https://datatracker.ietf.org/doc/html/rfc8725#section-3.5)
 
-Ao conectar a API a outro SQL Server, forneça a string completa e a chave JWT no ambiente e execute o mesmo comando `dotnet run`. Antes das migrations, a API verifica a sintaxe da conexão e exige um servidor em `Data Source` ou `Server`. Ela também rejeita uma chave ausente, em branco ou com menos de 32 bytes em UTF-8. As mensagens indicam a configuração a corrigir sem incluir seu conteúdo.
+Ao conectar a API a outro SQL Server, forneça a string completa e a chave JWT no ambiente. Antes das migrations, a API verifica a sintaxe da conexão, exige um servidor em `Data Source` ou `Server` e valida as configurações JWT. As mensagens indicam a configuração a corrigir sem incluir seu conteúdo.
 
 ### 3. Verificar a aplicação
 

@@ -153,13 +153,11 @@ public class AuthService : IAuthService
 
         var claims = new List<Claim>
         {
-            new(JwtRegisteredClaimNames.Sub, usuario.Id.ToString()),
-            new(JwtRegisteredClaimNames.Email, usuario.Email),
-            new(ClaimTypes.Name, usuario.Nome)
+            new(JwtRegisteredClaimNames.Sub, usuario.Id.ToString("D"))
         };
 
         if (usuario.Perfil is { } perfil)
-            claims.Add(new Claim("role", perfil.ToString()));
+            claims.Add(new Claim(JwtConfiguration.RoleClaimName, perfil.ToString()));
 
         var token = new JwtSecurityToken(
             _jwt.Issuer,
@@ -171,7 +169,7 @@ public class AuthService : IAuthService
         return new LoginResponse
         {
             Token = new JwtSecurityTokenHandler().WriteToken(token),
-            ExpiraEm = expiraEm
+            ExpiraEm = token.ValidTo
         };
     }
 }

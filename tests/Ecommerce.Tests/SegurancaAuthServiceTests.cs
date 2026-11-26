@@ -50,6 +50,8 @@ public sealed class SegurancaAuthServiceTests : ServiceTestBase
 
     private static JwtConfiguration CriarJwt() => JwtConfiguration.Load(new ConfigurationManager
     {
+        ["Jwt:Issuer"] = "OrderFlow.Tests",
+        ["Jwt:Audience"] = "OrderFlow.Tests",
         ["Jwt:Chave"] = Convert.ToHexString(RandomNumberGenerator.GetBytes(32))
     });
 

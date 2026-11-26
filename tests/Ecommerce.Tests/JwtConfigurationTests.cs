@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using Ecommerce.Application.Dtos.Requests;
+using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Infrastructure.Configuration;
 using Ecommerce.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
@@ -41,39 +43,115 @@ public class JwtConfigurationTests : ServiceTestBase
         Assert.Equal(bytes * 8, jwt.SigningCredentials.Key.KeySize);
     }
 
+    [Theory]
+    [InlineData("Issuer", null)]
+    [InlineData("Issuer", "")]
+    [InlineData("Issuer", " \t")]
+    [InlineData("Audience", null)]
+    [InlineData("Audience", "")]
+    [InlineData("Audience", " \t")]
+    public void Load_RejeitaIssuerEAudienceAusentesOuEmBranco(string campo, string? valor)
+    {
+        var configuracao = CriarConfiguracao(chave: new string('a', 32), omitirCampo: campo);
+        if (valor is not null)
+            configuracao[$"Jwt:{campo}"] = valor;
+
+        var exception = Assert.Throws<InvalidOperationException>(() => JwtConfiguration.Load(configuracao));
+
+        Assert.Equal($"Defina Jwt__{campo} com um valor não vazio.", exception.Message);
+    }
+
     [Fact]
-    public async Task TokenEmitido_PodeSerValidadoComAMesmaConfiguracao()
+    public void Load_UsaSessentaMinutosQuandoExpiracaoEstaAusente()
     {
         var jwt = CriarConfiguracaoJwtValida();
-        var token = await EmitirTokenAsync(jwt);
+
+        Assert.Equal(60, jwt.ExpirationMinutes);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" \t")]
+    [InlineData("configuracao-privada-invalida")]
+    [InlineData("1.5")]
+    [InlineData("-1")]
+    [InlineData("0")]
+    [InlineData("61")]
+    [InlineData("2147483648")]
+    public void Load_RejeitaExpiracaoInvalidaSemExporOValor(string? valor)
+    {
+        var configuracao = CriarConfiguracao(chave: new string('a', 32));
+        configuracao["Jwt:ExpiraMinutos"] = valor;
+
+        var exception = Assert.Throws<InvalidOperationException>(() => JwtConfiguration.Load(configuracao));
+
+        Assert.Equal("Defina Jwt__ExpiraMinutos como um número inteiro entre 1 e 60.", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("Issuer", "")]
+    [InlineData("Audience", "")]
+    [InlineData("Chave", "")]
+    [InlineData("ExpiraMinutos", "61")]
+    public void Startup_RejeitaJwtInvalidoAntesDeAcessarBanco(string campo, string valor)
+    {
+        using var factory = new AutorizacaoApiFixture.ApiFactory(new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:DefaultConnection"] = "Server=127.0.0.1,1;Connect Timeout=1",
+            ["Jwt:Chave"] = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
+            [$"Jwt:{campo}"] = valor
+        });
+
+        var exception = Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
+
+        Assert.StartsWith($"Defina Jwt__{campo} ", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(60)]
+    public async Task TokenEmitido_UsaDuracaoConfiguradaEPodeSerValidado(int minutos)
+    {
+        var configuracao = CriarConfiguracao(Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));
+        configuracao["Jwt:ExpiraMinutos"] = minutos.ToString(CultureInfo.InvariantCulture);
+        var jwt = JwtConfiguration.Load(configuracao);
+        var inicio = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var login = await EmitirTokenAsync(jwt);
+        var fim = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var parametros = jwt.CreateTokenValidationParameters();
 
-        var resultado = await new JsonWebTokenHandler().ValidateTokenAsync(token, parametros);
+        var resultado = await new JsonWebTokenHandler().ValidateTokenAsync(login.Token, parametros);
 
+        Assert.Equal(minutos, jwt.ExpirationMinutes);
         Assert.Same(jwt.SigningCredentials.Key, parametros.IssuerSigningKey);
+        Assert.Equal(TimeSpan.Zero, parametros.ClockSkew);
         Assert.True(resultado.IsValid);
-        Assert.Equal(SecurityAlgorithms.HmacSha256, Assert.IsType<JsonWebToken>(resultado.SecurityToken).Alg);
+        var emitido = Assert.IsType<JsonWebToken>(resultado.SecurityToken);
+        Assert.Equal(SecurityAlgorithms.HmacSha256, emitido.Alg);
+        Assert.Equal(emitido.ValidTo, login.ExpiraEm);
+        Assert.InRange(new DateTimeOffset(emitido.ValidTo).ToUnixTimeSeconds(), inicio + minutos * 60, fim + minutos * 60);
     }
 
     [Fact]
     public async Task TokenEmitido_ERejeitadoComOutraChave()
     {
-        var token = await EmitirTokenAsync(CriarConfiguracaoJwtValida());
+        var login = await EmitirTokenAsync(CriarConfiguracaoJwtValida());
         var parametros = CriarConfiguracaoJwtValida().CreateTokenValidationParameters();
 
-        var resultado = await new JsonWebTokenHandler().ValidateTokenAsync(token, parametros);
+        var resultado = await new JsonWebTokenHandler().ValidateTokenAsync(login.Token, parametros);
 
         Assert.False(resultado.IsValid);
         Assert.IsType<SecurityTokenSignatureKeyNotFoundException>(resultado.Exception);
     }
 
-    private static IConfiguration CriarConfiguracao(string? chave)
+    private static IConfiguration CriarConfiguracao(string? chave, string? omitirCampo = null)
     {
-        var configuracao = new ConfigurationManager
-        {
-            ["Jwt:Issuer"] = "OrderFlow.Tests",
-            ["Jwt:Audience"] = "OrderFlow.Tests"
-        };
+        var configuracao = new ConfigurationManager();
+
+        foreach (var campo in new[] { "Issuer", "Audience" })
+            if (campo != omitirCampo)
+                configuracao[$"Jwt:{campo}"] = "OrderFlow.Tests";
 
         if (chave is not null)
             configuracao["Jwt:Chave"] = chave;
@@ -84,7 +162,7 @@ public class JwtConfigurationTests : ServiceTestBase
     private static JwtConfiguration CriarConfiguracaoJwtValida() =>
         JwtConfiguration.Load(CriarConfiguracao(Convert.ToHexString(RandomNumberGenerator.GetBytes(32))));
 
-    private static async Task<string> EmitirTokenAsync(JwtConfiguration jwt)
+    private static async Task<LoginResponse> EmitirTokenAsync(JwtConfiguration jwt)
     {
         using var contexto = CriarContexto();
         var servico = new AuthService(contexto, jwt);
@@ -92,7 +170,6 @@ public class JwtConfigurationTests : ServiceTestBase
         var senha = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
         await servico.RegistrarAsync(new RegistrarUsuarioRequest { Nome = "Teste", Email = email, Senha = senha });
 
-        var login = await servico.LoginAsync(new LoginRequest { Email = email, Senha = senha });
-        return login.Token;
+        return await servico.LoginAsync(new LoginRequest { Email = email, Senha = senha });
     }
 }

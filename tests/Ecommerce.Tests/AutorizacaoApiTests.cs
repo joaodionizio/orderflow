@@ -10,16 +10,24 @@ using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Domain.Entities;
 using Ecommerce.Domain.Enums;
+using Ecommerce.Infrastructure.Configuration;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.IdentityModel.Tokens;
 
 namespace Ecommerce.Tests;
 
 public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassFixture<AutorizacaoApiFixture>
 {
     private const string Cadastro = "/api/v1/auth/registrar";
+    private const long InicioDe2000 = 946684800L;
+    private const long InicioDe2099 = 4070908800L;
     private static readonly string[] RotasOperacionais = ["/api/v1/compradores", "/api/v1/produtos", "/api/v1/pedidos"];
 
     [SqlServerFact]
@@ -48,16 +56,31 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
         await using var context = fixture.Database.CreateContext();
         var usuario = await context.Usuarios.SingleAsync(usuario => usuario.Email == novo.Email);
         Assert.Equal(PerfilUsuario.Operator, usuario.Perfil);
-        var token = new JwtSecurityTokenHandler().ReadJwtToken(await fixture.LoginAsync(novo));
+        var jwt = await fixture.LoginAsync(novo);
+        var token = new JwtSecurityTokenHandler().ReadJwtToken(jwt);
         Assert.Equal("Operator", Assert.Single(token.Claims, claim => claim.Type == "role").Value);
         Assert.Equal(usuario.Id.ToString(), token.Subject);
+        Assert.Equal(SecurityAlgorithms.HmacSha256, token.Header.Alg);
+        Assert.Equal(new[] { "aud", "exp", "iss", "role", "sub" }, token.Payload.Keys.Order(StringComparer.Ordinal));
+
+        using var identidade = await EnviarAsync(HttpMethod.Get, "/_test/identidade", jwt);
+        Assert.Equal(HttpStatusCode.OK, identidade.StatusCode);
+        using var corpo = JsonDocument.Parse(await identidade.Content.ReadAsStringAsync());
+        Assert.Equal(usuario.Id.ToString(), corpo.RootElement.GetProperty("nomeDaIdentidade").GetString());
+        Assert.Equal(usuario.Id.ToString(), corpo.RootElement.GetProperty("sub").GetString());
+        Assert.Equal("Operator", corpo.RootElement.GetProperty("role").GetString());
+        Assert.True(corpo.RootElement.GetProperty("operador").GetBoolean());
+        Assert.False(corpo.RootElement.GetProperty("claimMapeada").GetBoolean());
     }
 
     [SqlServerFact]
-    public async Task Cadastro_RejeitaCamposDePerfilMesmoQuandoSolicitadoPorAdmin()
+    public async Task Cadastro_RejeitaCamposDeIdentidadeEPerfilMesmoQuandoSolicitadoPorAdmin()
     {
         await using var context = fixture.Database.CreateContext();
-        foreach (var campo in new[] { "role", "perfil" })
+        foreach (var (campo, valor) in new[]
+        {
+            ("role", "Admin"), ("perfil", "Admin"), ("id", Guid.NewGuid().ToString()), ("sub", Guid.NewGuid().ToString())
+        })
         {
             var novo = NovaConta();
             using var response = await EnviarAsync(HttpMethod.Post, Cadastro, fixture.AdminToken,
@@ -66,12 +89,31 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
                     ["nome"] = novo.Nome,
                     ["email"] = novo.Email,
                     ["senha"] = novo.Senha,
-                    [campo] = "Admin"
+                    [campo] = valor
                 });
 
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
             Assert.False(await context.Usuarios.AnyAsync(usuario => usuario.Email == novo.Email));
         }
+    }
+
+    [SqlServerFact]
+    public async Task JwtLegado_ComNomeEEmailContinuaAutorizadoComIdentidadeBaseadaEmSub()
+    {
+        var jwt = fixture.Database.CreateJwtConfiguration();
+        var payload = CriarPayloadValido(jwt);
+        payload["role"] = "Operator";
+        payload[ClaimTypes.Name] = "Funcionário legado";
+        payload[JwtRegisteredClaimNames.Email] = "legado@example.test";
+        var token = SerializarToken(payload, jwt.SigningCredentials);
+        var sub = Assert.IsType<string>(payload["sub"]);
+
+        using var operacao = await EnviarAsync(HttpMethod.Get, RotasOperacionais[0], token);
+        Assert.Equal(HttpStatusCode.OK, operacao.StatusCode);
+        using var identidade = await EnviarAsync(HttpMethod.Get, "/_test/identidade", token);
+        Assert.Equal(HttpStatusCode.OK, identidade.StatusCode);
+        using var corpo = JsonDocument.Parse(await identidade.Content.ReadAsStringAsync());
+        Assert.Equal(sub, corpo.RootElement.GetProperty("nomeDaIdentidade").GetString());
     }
 
     [SqlServerFact]
@@ -166,12 +208,49 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
     }
 
     [SqlServerFact]
+    public async Task MudancaDePerfil_AfetaNovoLoginEPreservaIdentificador()
+    {
+        var conta = NovaConta();
+        using var cadastro = await EnviarAsync(HttpMethod.Post, Cadastro, fixture.AdminToken, conta);
+        Assert.Equal(HttpStatusCode.NoContent, cadastro.StatusCode);
+        var tokenAnterior = await fixture.LoginAsync(conta);
+
+        await using var context = fixture.Database.CreateContext();
+        var usuario = await context.Usuarios.SingleAsync(u => u.Email == conta.Email);
+        usuario.Perfil = null;
+        await context.SaveChangesAsync();
+
+        var tokenAtual = await fixture.LoginAsync(conta);
+        var leitor = new JwtSecurityTokenHandler();
+        Assert.Equal(leitor.ReadJwtToken(tokenAnterior).Subject, leitor.ReadJwtToken(tokenAtual).Subject);
+        using var anterior = await EnviarAsync(HttpMethod.Get, RotasOperacionais[0], tokenAnterior);
+        using var atual = await EnviarAsync(HttpMethod.Get, RotasOperacionais[0], tokenAtual);
+        Assert.Equal(HttpStatusCode.OK, anterior.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, atual.StatusCode);
+    }
+
+    [SqlServerFact]
     public async Task TokensValidosSemPerfilComPerfilDesconhecidoOuComVariosPerfis_Recebem403()
     {
-        string[][] perfisInvalidos = [[], ["Desconhecido"], ["Admin", "Desconhecido"], ["Admin", "Operator"]];
-        foreach (var perfis in perfisInvalidos)
+        var jwt = fixture.Database.CreateJwtConfiguration();
+        var payload = CriarPayloadValido(jwt);
+        payload["role"] = new[] { "Admin" };
+        string[][] perfisInvalidos =
         {
-            var token = fixture.CriarTokenDeTeste(perfis);
+            [], ["Desconhecido"], ["admin"], ["Admin", "Desconhecido"], ["Admin", "Operator"], ["Admin", "Admin"]
+        };
+        var tokens = perfisInvalidos.Select(perfis => fixture.CriarTokenDeTeste(perfis)).Concat(
+        [
+            fixture.CriarTokenDeTeste([], new Claim("roles", "Admin")),
+            fixture.CriarTokenDeTeste([], new Claim(ClaimTypes.Role, "Admin")),
+            fixture.CriarTokenDeTeste([], new Claim("ROLE", "Admin")),
+            fixture.CriarTokenDeTeste(["Admin"], new Claim("ROLE", "Operator")),
+            fixture.CriarTokenDeTeste(["Admin"], new Claim("roles", "Operator")),
+            fixture.CriarTokenDeTeste(["Admin"], new Claim(ClaimTypes.Role, "Operator")),
+            SerializarToken(payload, jwt.SigningCredentials)
+        ]);
+        foreach (var token in tokens)
+        {
             foreach (var rota in RotasOperacionais)
             {
                 using var response = await EnviarAsync(HttpMethod.Get, rota, token);
@@ -181,6 +260,147 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
             using var cadastro = await EnviarAsync(HttpMethod.Post, Cadastro, token, NovaConta());
             Assert.Equal(HttpStatusCode.Forbidden, cadastro.StatusCode);
         }
+    }
+
+    [SqlServerTheory]
+    [InlineData(SecurityAlgorithms.HmacSha256, false, HttpStatusCode.OK)]
+    [InlineData(SecurityAlgorithms.HmacSha256, true, HttpStatusCode.Unauthorized)]
+    [InlineData(SecurityAlgorithms.HmacSha384, false, HttpStatusCode.Unauthorized)]
+    [InlineData(SecurityAlgorithms.HmacSha512, false, HttpStatusCode.Unauthorized)]
+    [InlineData(SecurityAlgorithms.None, false, HttpStatusCode.Unauthorized)]
+    public async Task Jwt_ExigeAssinaturaHs256ComAChaveConfigurada(string algoritmo, bool outraChave, HttpStatusCode status)
+    {
+        var jwt = fixture.Database.CreateJwtConfiguration();
+        var key = outraChave ? new SymmetricSecurityKey(RandomNumberGenerator.GetBytes(32)) : jwt.SigningCredentials.Key;
+        var credenciais = algoritmo == SecurityAlgorithms.None ? null : new SigningCredentials(key, algoritmo);
+        var token = SerializarToken(CriarPayloadValido(jwt), credenciais);
+
+        using var response = await EnviarAsync(HttpMethod.Get, RotasOperacionais[0], token);
+
+        Assert.Equal(status, response.StatusCode);
+        if (status == HttpStatusCode.Unauthorized)
+            await VerificarDesafioGenericoAsync(response);
+    }
+
+    [SqlServerTheory]
+    [InlineData("exp", null)]
+    [InlineData("exp", InicioDe2000)]
+    [InlineData("exp", "4102444800")]
+    [InlineData("nbf", InicioDe2099)]
+    [InlineData("nbf", "946684800")]
+    [InlineData("iss", null)]
+    [InlineData("iss", "emissor-de-outro-servico")]
+    [InlineData("iss", "orderflow.tests")]
+    [InlineData("iss", "OrderFlow.Tests/")]
+    [InlineData("aud", null)]
+    [InlineData("aud", "outro-servico")]
+    [InlineData("aud", "orderflow.tests")]
+    [InlineData("aud", "OrderFlow.Tests/")]
+    [InlineData("aud", new string[] { "OrderFlow.Tests", "outro-servico" })]
+    [InlineData("aud", new string[] { "outro-servico", "OrderFlow.Tests" })]
+    [InlineData("aud", new string[] { "OrderFlow.Tests", "OrderFlow.Tests" })]
+    [InlineData("sub", null)]
+    [InlineData("sub", "")]
+    [InlineData("sub", "identificador-invalido")]
+    [InlineData("sub", "00000000-0000-0000-0000-000000000000")]
+    [InlineData("sub", " 22345678-1234-1234-1234-123456789012 ")]
+    [InlineData("sub", new string[] { "22345678-1234-1234-1234-123456789012" })]
+    [InlineData("sub", new string[] { "22345678-1234-1234-1234-123456789012", "32345678-1234-1234-1234-123456789012" })]
+    public async Task Jwt_ComClaimObrigatoriaAusenteOuInvalidaRecebe401SemDetalhes(string claim, object? valor)
+    {
+        var jwt = fixture.Database.CreateJwtConfiguration();
+        var payload = CriarPayloadValido(jwt);
+        if (valor is null)
+            payload.Remove(claim);
+        else
+            payload[claim] = valor;
+
+        using var response = await EnviarAsync(HttpMethod.Get, RotasOperacionais[0],
+            SerializarToken(payload, jwt.SigningCredentials));
+
+        await VerificarDesafioGenericoAsync(response);
+    }
+
+    [SqlServerFact]
+    public async Task Jwt_AceitaUmaAudienceExataEmArrayENbfNoPassado()
+    {
+        var jwt = fixture.Database.CreateJwtConfiguration();
+        var payload = CriarPayloadValido(jwt);
+        payload["aud"] = new[] { jwt.Audience };
+        payload["nbf"] = InicioDe2000;
+
+        using var response = await EnviarAsync(HttpMethod.Get, RotasOperacionais[0],
+            SerializarToken(payload, jwt.SigningCredentials));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [SqlServerTheory]
+    [InlineData("sub", null, HttpStatusCode.Unauthorized)]
+    [InlineData("sub", "22345678-1234-1234-1234-123456789012", HttpStatusCode.Unauthorized)]
+    [InlineData("iss", null, HttpStatusCode.Unauthorized)]
+    [InlineData("aud", "outro-servico", HttpStatusCode.Unauthorized)]
+    [InlineData("role", null, HttpStatusCode.Forbidden)]
+    [InlineData("role", "Operator", HttpStatusCode.Forbidden)]
+    public async Task Jwt_RejeitaPropriedadesJsonRepetidasMesmoQuandoOsValoresCoincidem(
+        string campo, string? valor, HttpStatusCode status)
+    {
+        var jwt = fixture.Database.CreateJwtConfiguration();
+        var payload = CriarPayloadValido(jwt);
+        var repeticao = JsonSerializer.Serialize(valor ?? payload[campo]);
+        var token = AssinarPayloadJson(payload.SerializeToJson().Insert(1, $"\"{campo}\":{repeticao},"), jwt.SigningCredentials);
+
+        using var operacao = await EnviarAsync(HttpMethod.Get, RotasOperacionais[0], token);
+        using var cadastro = await EnviarAsync(HttpMethod.Post, Cadastro, token, NovaConta());
+
+        Assert.Equal(status, operacao.StatusCode);
+        Assert.Equal(status, cadastro.StatusCode);
+        if (status == HttpStatusCode.Unauthorized)
+            await VerificarDesafioGenericoAsync(operacao);
+    }
+
+    [SqlServerTheory]
+    [InlineData(ClaimTypes.NameIdentifier, true)]
+    [InlineData(ClaimTypes.NameIdentifier, false)]
+    [InlineData("nameid", false)]
+    [InlineData("SUB", false)]
+    public async Task Jwt_AliasesDeIdentidadeRecebem401(string alias, bool omitirSub)
+    {
+        var jwt = fixture.Database.CreateJwtConfiguration();
+        var payload = CriarPayloadValido(jwt);
+        if (omitirSub)
+            payload.Remove("sub");
+        payload[alias] = Guid.NewGuid().ToString("D");
+
+        using var response = await EnviarAsync(HttpMethod.Get, RotasOperacionais[0],
+            SerializarToken(payload, jwt.SigningCredentials));
+
+        await VerificarDesafioGenericoAsync(response);
+    }
+
+    private static JwtPayload CriarPayloadValido(JwtConfiguration jwt) => new(
+        jwt.Issuer, jwt.Audience,
+        [new Claim("sub", Guid.NewGuid().ToString("D")), new Claim("role", "Admin")],
+        notBefore: null, expires: new DateTime(2100, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+    private static string SerializarToken(JwtPayload payload, SigningCredentials? credenciais) =>
+        new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken(new JwtHeader(credenciais), payload));
+
+    private static string AssinarPayloadJson(string payload, SigningCredentials credenciais)
+    {
+        var partesAssinadas = $"{new JwtHeader(credenciais).Base64UrlEncode()}.{Base64UrlEncoder.Encode(payload)}";
+        var chave = Assert.IsType<SymmetricSecurityKey>(credenciais.Key);
+        var assinatura = HMACSHA256.HashData(chave.Key, Encoding.UTF8.GetBytes(partesAssinadas));
+        return $"{partesAssinadas}.{Base64UrlEncoder.Encode(assinatura)}";
+    }
+
+    private static async Task VerificarDesafioGenericoAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        var desafio = Assert.Single(response.Headers.WwwAuthenticate);
+        Assert.Equal("Bearer", desafio.Scheme);
+        Assert.Null(desafio.Parameter);
+        Assert.Empty(await response.Content.ReadAsStringAsync());
     }
 
     [SqlServerFact]
@@ -279,11 +499,12 @@ public sealed class AutorizacaoApiFixture : IAsyncLifetime
         return Assert.IsType<LoginResponse>(login).Token;
     }
 
-    internal string CriarTokenDeTeste(IEnumerable<string> perfis)
+    internal string CriarTokenDeTeste(IEnumerable<string> perfis, params Claim[] outrasClaims)
     {
         var jwt = Database.CreateJwtConfiguration();
         var claims = new List<Claim> { new(JwtRegisteredClaimNames.Sub, Guid.NewGuid().ToString()) };
         claims.AddRange(perfis.Select(perfil => new Claim("role", perfil)));
+        claims.AddRange(outrasClaims);
 
         return new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken(
             jwt.Issuer, jwt.Audience, claims, expires: DateTime.UtcNow.AddMinutes(5),
@@ -298,12 +519,31 @@ public sealed class AutorizacaoApiFixture : IAsyncLifetime
             await Database.DisposeAsync();
     }
 
-    private sealed class ApiFactory(IReadOnlyDictionary<string, string?> configuration) : WebApplicationFactory<Program>
+    internal sealed class ApiFactory(IReadOnlyDictionary<string, string?> configuration) : WebApplicationFactory<Program>
     {
         protected override IHost CreateHost(IHostBuilder builder)
         {
             builder.ConfigureHostConfiguration(config => config.AddInMemoryCollection(configuration));
             return base.CreateHost(builder);
         }
+
+        protected override void ConfigureWebHost(IWebHostBuilder builder) => builder.ConfigureServices(services =>
+            services.AddControllers().AddApplicationPart(typeof(IdentidadeDeTesteController).Assembly));
     }
+}
+
+[Authorize]
+[ApiExplorerSettings(IgnoreApi = true)]
+[Route("/_test/identidade")]
+public sealed class IdentidadeDeTesteController : ControllerBase
+{
+    [HttpGet]
+    public IActionResult Obter() => Ok(new
+    {
+        nomeDaIdentidade = User.Identity?.Name,
+        sub = User.FindFirstValue("sub"),
+        role = User.FindFirstValue("role"),
+        operador = User.IsInRole("Operator"),
+        claimMapeada = User.HasClaim(claim => claim.Type is ClaimTypes.NameIdentifier or ClaimTypes.Role)
+    });
 }
