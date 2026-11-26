@@ -101,6 +101,29 @@ Regras implementadas:
 
 O cadastro recebe `nome`, `email` e `senha`. O servidor provisiona sempre um `Operator` e rejeita campos extras, incluindo `role` e `perfil`. O login retorna o token JWT em `token` e a validade em `expiraEm`. Use `Authorization: Bearer <token>` nas rotas protegidas. No Swagger em desenvolvimento, use **Authorize** para informar o JWT e consulte os perfis exigidos por operação. Tokens ausentes ou inválidos recebem `401` nas rotas protegidas. Um token válido sem o perfil exigido recebe `403`.
 
+### Segurança das senhas
+
+O cadastro de operadores e o provisionamento de administradores usam a mesma política. Novas senhas têm de 15 a 128 pontos de código Unicode e aceitam espaços e frases-senha, sem exigir combinações de tipos de caracteres. Um caractere suplementar conta como um ponto de código. Uma letra e um acento combinante separado contam como dois. Sequências Unicode inválidas são recusadas. A verificação e o hashing usam a senha inteira, incluindo espaços iniciais e finais, sem truncamento nem normalização Unicode. [NIST SP 800-63B-4](https://pages.nist.gov/800-63-4/sp800-63b.html#passwordver)
+
+O bloqueio local compara a senha inteira, ignorando maiúsculas e minúsculas nessa comparação. Ele cobre uma lista curta de frases previsíveis e alguns padrões de teclado e repetição. A cobertura é parcial e não detecta senhas comprometidas fora da lista e dos padrões.
+
+O login aceita senhas legadas abaixo de 15 e acima de 128 caracteres, até o teto de 1.024 pontos de código. O fluxo anterior não tinha teto de comprimento e o hash armazenado não revela o comprimento original. Por isso, senhas legadas acima de 1.024 caracteres passam a ser recusadas e exigem tratamento administrativo antes de o usuário voltar a acessar a conta.
+
+O armazenamento continua no formato `iteracoes.salt.hash`, com PBKDF2-HMAC-SHA256, salt aleatório de 16 bytes e saída de 32 bytes. Novos hashes usam 600.000 iterações. A verificação aceita de 100.000 a 1.200.000 iterações e valida a estrutura, o Base64 e os tamanhos antes da derivação. A comparação dos bytes usa `FixedTimeEquals`. Registros inválidos resultam na mesma falha de autenticação de uma senha incorreta e geram um aviso sem identificadores de usuário, senhas ou hashes. [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#pbkdf2)
+
+Após um login correto, hashes abaixo de 600.000 iterações são atualizados com um salt novo. A atualização modifica apenas `SenhaHash` e só grava se o hash anterior ainda corresponder exatamente ao lido. Quando outra operação vence a disputa, o login verifica a senha novamente com o registro atual. Hashes válidos com custo superior são preservados. A atualização dispensa migration e ocorre à medida que os usuários autenticam.
+
+#### Medição local do PBKDF2
+
+Medição em Release no macOS 27.2.1, Apple M4 (Arm64), .NET 8.0.27 (SDK 8.0.421). Um processo nativo executou 20 amostras sequenciais por custo, em ordem alternada e após três aquecimentos por custo. A medição incluiu apenas a chamada `Rfc2898DeriveBytes.Pbkdf2`, com entrada sintética ASCII de 32 bytes, salt de 16 bytes e saída de 32 bytes.
+
+| Iterações | Mediana | p95 |
+| --- | --- | --- |
+| 100.000 | 13,85 ms | 14,19 ms |
+| 600.000 | 83,39 ms | 84,93 ms |
+
+O custo mediano da derivação foi 6,02 vezes maior. O primeiro login que atualiza um hash de 100.000 iterações executa as duas derivações. Os números não incluem HTTP, banco ou concorrência e não são usados como limites de latência no CI.
+
 ### Compradores
 
 | Método | Endpoint |
@@ -248,7 +271,7 @@ curl --fail --show-error http://localhost:5115/health
 ### Provisionar o primeiro administrador
 
 1. Use um terminal privado com a configuração do ambiente de destino. Aplique as migrations antes do provisionamento. O startup normal da API já as aplica e pode ser executado em rede privada para preparar o banco.
-2. Execute o comando abaixo. Confira o servidor e o banco exibidos. Informe nome, um e-mail de funcionário ainda não cadastrado e uma senha exclusiva de pelo menos 15 caracteres. A senha é solicitada duas vezes com a digitação oculta.
+2. Execute o comando abaixo. Confira o servidor e o banco exibidos. Informe nome, um e-mail de funcionário ainda não cadastrado e uma senha exclusiva de 15 a 128 caracteres. A senha é solicitada duas vezes com a digitação oculta.
 
    ```bash
    dotnet run --no-launch-profile --project src/Ecommerce.Api -- provision-admin
@@ -266,11 +289,11 @@ Em uma atualização de ambiente, retire de serviço as instâncias da versão a
 
 ```bash
 dotnet restore Ecommerce.sln
-dotnet build Ecommerce.sln --no-restore
-dotnet test Ecommerce.sln --no-build
+dotnet build Ecommerce.sln --configuration Release --no-restore
+dotnet test Ecommerce.sln --configuration Release --no-build
 ```
 
-Os testes de serviço usam EF Core em memória. Para executar também os testes HTTP, de provisionamento e de migration, forneça `ORDERFLOW_TEST_SQLSERVER` com uma string de conexão para uma **instância SQL Server isolada**, com permissão para criar e excluir bancos. A suíte gera nomes exclusivos `OrderFlowTests_<guid>` para seus bancos e os remove ao final. Sem essa variável, os testes de integração são ignorados localmente e falham no GitHub Actions.
+Os testes unitários de serviços usam EF Core em memória. Para executar também os testes HTTP, de provisionamento, de migration e de atualização concorrente de hashes, forneça `ORDERFLOW_TEST_SQLSERVER` com uma string de conexão para uma **instância SQL Server isolada**, com permissão para criar e excluir bancos. A suíte gera nomes exclusivos `OrderFlowTests_<guid>` para seus bancos e os remove ao final. Sem essa variável, os testes de integração são ignorados localmente e falham no GitHub Actions.
 
 ## Integração contínua
 

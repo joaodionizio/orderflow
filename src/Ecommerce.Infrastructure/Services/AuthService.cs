@@ -1,32 +1,34 @@
 using System.Data;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using System.Security.Cryptography;
 using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Exceptions;
 using Ecommerce.Application.Interfaces;
+using Ecommerce.Application.Security;
 using Ecommerce.Domain.Entities;
 using Ecommerce.Domain.Enums;
 using Ecommerce.Infrastructure.Configuration;
 using Ecommerce.Infrastructure.Data;
+using Ecommerce.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Ecommerce.Infrastructure.Services;
 
 public class AuthService : IAuthService
 {
-    private const int SaltSize = 16;
-    private const int HashSize = 32;
-    private const int Iterations = 100_000;
     private readonly ApplicationDbContext _context;
     private readonly JwtConfiguration _jwt;
+    private readonly ILogger<AuthService> _logger;
 
-    public AuthService(ApplicationDbContext context, JwtConfiguration jwt)
+    public AuthService(ApplicationDbContext context, JwtConfiguration jwt, ILogger<AuthService>? logger = null)
     {
         _context = context;
         _jwt = jwt;
+        _logger = logger ?? NullLogger<AuthService>.Instance;
     }
 
     public async Task RegistrarAsync(RegistrarUsuarioRequest request)
@@ -39,9 +41,6 @@ public class AuthService : IAuthService
 
     public async Task ProvisionarPrimeiroAdminAsync(RegistrarUsuarioRequest request)
     {
-        if (request.Senha is not { Length: >= 15 })
-            throw new RegraDeNegocioException("A senha do administrador deve possuir pelo menos 15 caracteres.");
-
         var usuario = CriarUsuario(request, PerfilUsuario.Admin);
         var strategy = _context.Database.CreateExecutionStrategy();
 
@@ -79,15 +78,16 @@ public class AuthService : IAuthService
         if (string.IsNullOrWhiteSpace(request.Email))
             throw new RegraDeNegocioException("O e-mail do usuário é obrigatório.");
 
-        if (string.IsNullOrWhiteSpace(request.Senha))
-            throw new RegraDeNegocioException("A senha é obrigatória.");
+        var erroSenha = PoliticaDeSenhas.ValidarNova(request.Senha);
+        if (erroSenha is not null)
+            throw new RegraDeNegocioException(erroSenha);
 
         return new Usuario
         {
             Id = Guid.NewGuid(),
             Nome = request.Nome.Trim(),
             Email = request.Email.Trim().ToLowerInvariant(),
-            SenhaHash = GerarHash(request.Senha),
+            SenhaHash = HashDeSenha.Gerar(request.Senha),
             Perfil = perfil,
             DataCriacao = DateTime.UtcNow
         };
@@ -101,16 +101,51 @@ public class AuthService : IAuthService
 
     public async Task<LoginResponse> LoginAsync(LoginRequest request)
     {
+        if (PoliticaDeSenhas.ValidarLogin(request.Senha) is not null)
+            throw CredenciaisInvalidas();
+
         var email = request.Email.Trim().ToLowerInvariant();
         var usuario = await _context.Usuarios
             .AsNoTracking()
-            .FirstOrDefaultAsync(usuario => usuario.Email == email);
+            .FirstOrDefaultAsync(usuario => usuario.Email == email) ?? throw CredenciaisInvalidas();
 
-        if (usuario is null || !SenhaValida(request.Senha, usuario.SenhaHash))
-            throw new RegraDeNegocioException("E-mail ou senha inválidos.");
+        if (VerificarCredencial(request.Senha, usuario) == ResultadoHashDeSenha.AtualizacaoNecessaria)
+        {
+            var id = usuario.Id;
+            var hashAnterior = usuario.SenhaHash;
+            var hashNovo = HashDeSenha.Gerar(request.Senha);
+
+            // O SQL Server deve comparar também maiúsculas, minúsculas e o comprimento real do registro.
+            var afetados = await _context.Usuarios
+                .Where(u => u.Id == id
+                    && EF.Functions.Collate(u.SenhaHash, "Latin1_General_100_BIN2") == hashAnterior
+                    && EF.Functions.DataLength(u.SenhaHash) == EF.Functions.DataLength(hashAnterior))
+                .ExecuteUpdateAsync(setters => setters.SetProperty(u => u.SenhaHash, hashNovo));
+
+            if (afetados == 0)
+            {
+                usuario = await _context.Usuarios.AsNoTracking()
+                    .FirstOrDefaultAsync(u => u.Id == id && u.Email == email) ?? throw CredenciaisInvalidas();
+                VerificarCredencial(request.Senha, usuario);
+            }
+        }
 
         return GerarToken(usuario);
     }
+
+    private ResultadoHashDeSenha VerificarCredencial(string senha, Usuario usuario)
+    {
+        var resultado = HashDeSenha.Verificar(senha, usuario.SenhaHash);
+        if (resultado == ResultadoHashDeSenha.RegistroInvalido)
+            _logger.LogWarning("Registro de hash de senha inválido encontrado durante a autenticação.");
+
+        if (resultado is ResultadoHashDeSenha.RegistroInvalido or ResultadoHashDeSenha.SenhaIncorreta)
+            throw CredenciaisInvalidas();
+
+        return resultado;
+    }
+
+    private static RegraDeNegocioException CredenciaisInvalidas() => new("E-mail ou senha inválidos.");
 
     private LoginResponse GerarToken(Usuario usuario)
     {
@@ -138,37 +173,5 @@ public class AuthService : IAuthService
             Token = new JwtSecurityTokenHandler().WriteToken(token),
             ExpiraEm = expiraEm
         };
-    }
-
-    private static string GerarHash(string senha)
-    {
-        var salt = RandomNumberGenerator.GetBytes(SaltSize);
-        var hash = Rfc2898DeriveBytes.Pbkdf2(
-            senha,
-            salt,
-            Iterations,
-            HashAlgorithmName.SHA256,
-            HashSize);
-
-        return $"{Iterations}.{Convert.ToBase64String(salt)}.{Convert.ToBase64String(hash)}";
-    }
-
-    private static bool SenhaValida(string senha, string senhaHash)
-    {
-        var partes = senhaHash.Split('.', 3);
-
-        if (partes.Length != 3 || !int.TryParse(partes[0], out var iteracoes))
-            return false;
-
-        var salt = Convert.FromBase64String(partes[1]);
-        var hashSalvo = Convert.FromBase64String(partes[2]);
-        var hashInformado = Rfc2898DeriveBytes.Pbkdf2(
-            senha,
-            salt,
-            iteracoes,
-            HashAlgorithmName.SHA256,
-            hashSalvo.Length);
-
-        return CryptographicOperations.FixedTimeEquals(hashInformado, hashSalvo);
     }
 }

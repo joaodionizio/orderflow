@@ -1,14 +1,15 @@
 using System.IdentityModel.Tokens.Jwt;
-using System.Security.Cryptography;
+using Ecommerce.Api.Commands;
 using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Exceptions;
 using Ecommerce.Domain.Enums;
-using Ecommerce.Infrastructure.Services;
+using Ecommerce.Infrastructure;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Ecommerce.Tests;
 
@@ -19,11 +20,10 @@ public sealed class ProvisionamentoAdminTests
     {
         await using var database = new SqlServerTestDatabase();
         var conta = AutorizacaoApiTests.NovaConta();
+        conta.Senha = conta.Senha[..6];
         var id = Guid.NewGuid();
         var criadaEm = DateTime.UtcNow;
-        var salt = RandomNumberGenerator.GetBytes(16);
-        var hash = Rfc2898DeriveBytes.Pbkdf2(conta.Senha, salt, 100_000, HashAlgorithmName.SHA256, 32);
-        var hashLegado = $"100000.{Convert.ToBase64String(salt)}.{Convert.ToBase64String(hash)}";
+        var hashLegado = HashDeSenhaTests.GerarHashDeTeste(conta.Senha, 100_000);
 
         await using var context = database.CreateContext();
         var migrator = context.GetService<IMigrator>();
@@ -50,13 +50,16 @@ public sealed class ProvisionamentoAdminTests
             Assert.Equal(547, erro.Number);
         }
 
-        var auth = new AuthService(context, database.CreateJwtConfiguration());
+        var auth = database.CreateAuthService(context);
         var credenciais = new LoginRequest { Email = conta.Email, Senha = conta.Senha };
         var anterior = await auth.LoginAsync(credenciais);
         var handler = new JwtSecurityTokenHandler();
         Assert.DoesNotContain(handler.ReadJwtToken(anterior.Token).Claims, claim => claim.Type == "role");
 
-        await Assert.ThrowsAsync<RegraDeNegocioException>(() => auth.ProvisionarPrimeiroAdminAsync(conta));
+        var duplicada = AutorizacaoApiTests.NovaConta();
+        duplicada.Email = conta.Email;
+        var erroDuplicidade = await Assert.ThrowsAsync<RegraDeNegocioException>(() => auth.ProvisionarPrimeiroAdminAsync(duplicada));
+        Assert.Contains("e-mail", erroDuplicidade.Message);
         await auth.ProvisionarPrimeiroAdminAsync(AutorizacaoApiTests.NovaConta());
         Assert.Equal(1, await context.Usuarios.CountAsync(u => u.Perfil == PerfilUsuario.Admin));
 
@@ -74,7 +77,7 @@ public sealed class ProvisionamentoAdminTests
         await using var database = new SqlServerTestDatabase();
         await using var context = database.CreateContext();
         await context.Database.MigrateAsync();
-        var auth = new AuthService(context, database.CreateJwtConfiguration());
+        var auth = database.CreateAuthService(context);
         var conta = AutorizacaoApiTests.NovaConta();
         conta.Senha = conta.Senha[..14];
 
@@ -82,6 +85,58 @@ public sealed class ProvisionamentoAdminTests
 
         Assert.Contains("15 caracteres", erro.Message);
         Assert.False(await context.Usuarios.AnyAsync());
+    }
+
+    [SqlServerFact]
+    public async Task Cli_AplicaPoliticaEOcultaSenhaUnicodeComEspacos()
+    {
+        await using var database = new SqlServerTestDatabase();
+        await using var context = database.CreateContext();
+        await context.Database.MigrateAsync();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(database.CreateJwtConfiguration());
+        services.AddInfrastructure(database.Configuration["ConnectionStrings:DefaultConnection"]!);
+        await using var provider = services.BuildServiceProvider();
+        var conta = AutorizacaoApiTests.NovaConta();
+
+        foreach (var senha in new[] { conta.Senha[..14], PoliticaDeSenhasTests.Frase(129),
+            PoliticaDeSenhasTests.SenhaComum, PoliticaDeSenhasTests.Frase(15) + '\uD800' })
+        {
+            Assert.Equal(1, await ExecutarCliAsync(senha));
+            Assert.False(await context.Usuarios.AnyAsync());
+        }
+
+        var frase = PoliticaDeSenhasTests.Frase(125).Insert(2, "\0\u0001\t");
+        Assert.Equal(0, await ExecutarCliAsync(frase, "🚀\b"));
+        Assert.Equal(PerfilUsuario.Admin, (await context.Usuarios.SingleAsync()).Perfil);
+        var login = await database.CreateAuthService(context).LoginAsync(new LoginRequest { Email = conta.Email, Senha = frase });
+        Assert.NotEmpty(login.Token);
+
+        async Task<int> ExecutarCliAsync(string senha, string edicao = "")
+        {
+            using var entrada = new StringReader($"{conta.Nome}\n{conta.Email}\n");
+            using var saida = new StringWriter();
+            using var erros = new StringWriter();
+            var teclas = new Queue<char>($"{senha}{edicao}\n{senha}\n");
+            var codigo = await ProvisionarAdminCommand.ExecutarAsync(provider, entrada, saida, erros, () =>
+            {
+                var caractere = teclas.Dequeue();
+                var tecla = caractere switch
+                {
+                    '\n' => ConsoleKey.Enter,
+                    '\b' => ConsoleKey.Backspace,
+                    '\0' => ConsoleKey.D2,
+                    '\t' => ConsoleKey.Tab,
+                    _ => ConsoleKey.A
+                };
+                return new ConsoleKeyInfo(caractere, tecla, false, false, caractere is '\0' or '\u0001');
+            });
+
+            Assert.DoesNotContain(senha, saida.ToString());
+            Assert.DoesNotContain(senha, erros.ToString());
+            return codigo;
+        }
     }
 
     [SqlServerFact]
@@ -102,7 +157,7 @@ public sealed class ProvisionamentoAdminTests
         async Task<bool> ProvisionarAsync(ConcorrenciaNoInsert interceptor)
         {
             await using var context = database.CreateContext(interceptor);
-            var auth = new AuthService(context, database.CreateJwtConfiguration());
+            var auth = database.CreateAuthService(context);
             try
             {
                 await auth.ProvisionarPrimeiroAdminAsync(AutorizacaoApiTests.NovaConta());

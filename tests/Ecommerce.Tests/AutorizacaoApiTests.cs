@@ -4,11 +4,12 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Dtos.Responses;
+using Ecommerce.Domain.Entities;
 using Ecommerce.Domain.Enums;
-using Ecommerce.Infrastructure.Services;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -71,6 +72,80 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
             Assert.False(await context.Usuarios.AnyAsync(usuario => usuario.Email == novo.Email));
         }
+    }
+
+    [SqlServerFact]
+    public async Task Cadastro_AplicaPoliticaELoginPreservaFraseSenhaUnicodeComEspacos()
+    {
+        await using var context = fixture.Database.CreateContext();
+        var conta = NovaConta();
+
+        foreach (var senha in new[] { conta.Senha[..14], PoliticaDeSenhasTests.Frase(129), PoliticaDeSenhasTests.SenhaComum })
+        {
+            conta.Senha = senha;
+            using var response = await EnviarAsync(HttpMethod.Post, Cadastro, fixture.AdminToken, conta);
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.False(await context.Usuarios.AnyAsync(u => u.Email == conta.Email));
+        }
+
+        conta.Senha = PoliticaDeSenhasTests.Frase(128);
+        using var cadastro = await EnviarAsync(HttpMethod.Post, Cadastro, fixture.AdminToken, conta);
+        Assert.Equal(HttpStatusCode.NoContent, cadastro.StatusCode);
+        Assert.NotEmpty(await fixture.LoginAsync(conta));
+
+        using var semEspacos = await EnviarAsync(HttpMethod.Post, "/api/v1/auth/login", token: null,
+            new LoginRequest { Email = conta.Email, Senha = conta.Senha.Trim() });
+        Assert.Equal(HttpStatusCode.BadRequest, semEspacos.StatusCode);
+    }
+
+    [SqlServerFact]
+    public async Task CadastroELogin_RejeitamUnicodeMalformadoSemEcoarSenha()
+    {
+        const string senha = "Frase de teste privada";
+        var conta = NovaConta();
+        foreach (var caractere in new[] { @"\uD800", @"\uDC00" })
+        {
+            var dadosCadastro = $$"""{"nome":"{{conta.Nome}}","email":"{{conta.Email}}","senha":"{{senha}}{{caractere}}"}""";
+            using var cadastro = new HttpRequestMessage(HttpMethod.Post, Cadastro)
+            {
+                Content = new StringContent(dadosCadastro, Encoding.UTF8, "application/json")
+            };
+            cadastro.Headers.Authorization = new AuthenticationHeaderValue("Bearer", fixture.AdminToken);
+            using var respostaCadastro = await fixture.Client.SendAsync(cadastro);
+
+            var dadosLogin = $$"""{"email":"{{conta.Email}}","senha":"{{senha}}{{caractere}}"}""";
+            using var credenciais = new StringContent(dadosLogin, Encoding.UTF8, "application/json");
+            using var respostaLogin = await fixture.Client.PostAsync("/api/v1/auth/login", credenciais);
+            foreach (var resposta in new[] { respostaCadastro, respostaLogin })
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, resposta.StatusCode);
+                Assert.DoesNotContain(senha, await resposta.Content.ReadAsStringAsync());
+            }
+        }
+
+        await using var context = fixture.Database.CreateContext();
+        Assert.False(await context.Usuarios.AnyAsync(u => u.Email == conta.Email));
+    }
+
+    [SqlServerFact]
+    public async Task Login_AplicaTetoERetornaFalhaGenericaParaHashCorrompido()
+    {
+        var conta = NovaConta();
+        await using var context = fixture.Database.CreateContext();
+        context.Usuarios.Add(new Usuario { Id = Guid.NewGuid(), Nome = conta.Nome, Email = conta.Email, SenhaHash = "invalido" });
+        await context.SaveChangesAsync();
+
+        using var corrompido = await EnviarAsync(HttpMethod.Post, "/api/v1/auth/login", token: null,
+            new LoginRequest { Email = conta.Email, Senha = conta.Senha });
+        Assert.Equal(HttpStatusCode.BadRequest, corrompido.StatusCode);
+        using var corpo = JsonDocument.Parse(await corrompido.Content.ReadAsStringAsync());
+        Assert.Equal("E-mail ou senha inválidos.", corpo.RootElement.GetProperty("mensagem").GetString());
+        Assert.False(corpo.RootElement.TryGetProperty("token", out _));
+
+        using var extensa = await EnviarAsync(HttpMethod.Post, "/api/v1/auth/login", token: null,
+            new LoginRequest { Email = conta.Email, Senha = PoliticaDeSenhasTests.Frase(1025) });
+        Assert.Equal(HttpStatusCode.BadRequest, extensa.StatusCode);
+        Assert.Contains("1024", await extensa.Content.ReadAsStringAsync());
     }
 
     [SqlServerFact]
@@ -177,7 +252,7 @@ public sealed class AutorizacaoApiFixture : IAsyncLifetime
         await using (var context = Database.CreateContext())
         {
             await context.Database.MigrateAsync();
-            var auth = new AuthService(context, Database.CreateJwtConfiguration());
+            var auth = Database.CreateAuthService(context);
             await auth.ProvisionarPrimeiroAdminAsync(admin);
             await auth.RegistrarAsync(operador);
         }

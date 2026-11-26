@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Ecommerce.Infrastructure.Configuration;
 using Ecommerce.Infrastructure.Data;
+using Ecommerce.Infrastructure.Services;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -54,6 +55,8 @@ internal sealed class SqlServerTestDatabase : IAsyncDisposable
 
     public JwtConfiguration CreateJwtConfiguration() => JwtConfiguration.Load(
         new ConfigurationBuilder().AddInMemoryCollection(Configuration).Build());
+
+    public AuthService CreateAuthService(ApplicationDbContext context) => new(context, CreateJwtConfiguration());
 
     public async ValueTask DisposeAsync()
     {

@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
+using Ecommerce.Application.Security;
 
 namespace Ecommerce.Application.Dtos.Requests;
 
@@ -15,7 +16,7 @@ public class RegistrarUsuarioRequest
     [MaxLength(200, ErrorMessage = "O e-mail do usuário deve possuir no máximo 200 caracteres.")]
     public string Email { get; set; } = string.Empty;
 
-    [Required(ErrorMessage = "A senha é obrigatória.")]
-    [MinLength(6, ErrorMessage = "A senha deve possuir pelo menos 6 caracteres.")]
+    [Required(AllowEmptyStrings = true, ErrorMessage = "A senha é obrigatória.")]
+    [ValidarSenha(nova: true)]
     public string Senha { get; set; } = string.Empty;
 }
