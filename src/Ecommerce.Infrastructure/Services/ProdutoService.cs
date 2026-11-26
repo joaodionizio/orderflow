@@ -41,16 +41,28 @@ public class ProdutoService : IProdutoService
         return MapearParaResponse(produto);
     }
 
-    public async Task<List<ProdutoResponse>> ListarAsync()
+    public async Task<ResultadoPaginadoResponse<ProdutoResponse>> ListarAsync(
+        PaginacaoRequest? paginacao = null, CancellationToken cancellationToken = default)
     {
-        var produtos = await _context.Produtos
-            .AsNoTracking()
-            .OrderBy(produto => produto.Nome)
-            .ToListAsync();
+        var (pagina, tamanho, deslocamento) = (paginacao ?? new PaginacaoRequest()).Validar();
+        var query = _context.Produtos.AsNoTracking();
+        var totalItens = await query.LongCountAsync(cancellationToken);
 
-        return produtos
-            .Select(MapearParaResponse)
-            .ToList();
+        var produtos = await query
+            .OrderBy(produto => produto.Nome)
+            .ThenBy(produto => produto.Id)
+            .Skip(deslocamento)
+            .Take(tamanho)
+            .Select(produto => new ProdutoResponse
+            {
+                Id = produto.Id,
+                Nome = produto.Nome,
+                Preco = produto.Preco,
+                DataCriacao = produto.DataCriacao
+            })
+            .ToListAsync(cancellationToken);
+
+        return ResultadoPaginadoResponse<ProdutoResponse>.Criar(produtos, pagina, tamanho, totalItens);
     }
 
     public async Task<ProdutoResponse> BuscarPorIdAsync(Guid id)

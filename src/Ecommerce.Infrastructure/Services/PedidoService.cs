@@ -67,42 +67,47 @@ public class PedidoService : IPedidoService
         return await BuscarPorIdAsync(pedido.Id);
     }
 
-    public async Task<ResultadoPaginadoResponse<PedidoResponse>> ListarAsync(PedidoFiltroRequest filtro)
+    public async Task<ResultadoPaginadoResponse<PedidoResponse>> ListarAsync(
+        PedidoFiltroRequest? filtro, CancellationToken cancellationToken = default)
     {
         filtro ??= new PedidoFiltroRequest();
-        var deslocamento = (filtro.Pagina - 1L) * filtro.TamanhoPagina;
-        if (deslocamento > int.MaxValue)
-            throw new RegraDeNegocioException("O deslocamento da página excede o máximo permitido.");
+        var (pagina, tamanho, deslocamento) = filtro.Validar();
+        var query = _context.Pedidos.AsNoTracking();
 
-        var query = _context.Pedidos
-            .AsNoTracking()
-            .Include(p => p.Comprador)
-            .Include(p => p.Itens)
-                .ThenInclude(i => i.Produto)
-            .AsQueryable();
+        if (filtro.Status is { } status)
+            query = query.Where(p => p.Status == status);
 
-        if (filtro.Status.HasValue)
-            query = query.Where(p => p.Status == filtro.Status.Value);
+        if (filtro.CompradorId is { } compradorId)
+            query = query.Where(p => p.CompradorId == compradorId);
 
-        if (filtro.CompradorId.HasValue)
-            query = query.Where(p => p.CompradorId == filtro.CompradorId.Value);
+        var totalItens = await query.LongCountAsync(cancellationToken);
 
-        var totalItens = await query.CountAsync();
-
+        // Carrega os campos usados pelo mapeamento e mantém o cálculo monetário no domínio.
         var pedidos = await query
             .OrderByDescending(p => p.DataCriacao)
-            .Skip((int)deslocamento)
-            .Take(filtro.TamanhoPagina)
-            .ToListAsync();
+            .ThenBy(p => p.Id)
+            .Skip(deslocamento)
+            .Take(tamanho)
+            .Select(p => new Pedido
+            {
+                Id = p.Id,
+                CompradorId = p.CompradorId,
+                Status = p.Status,
+                DataCriacao = p.DataCriacao,
+                DataAtualizacao = p.DataAtualizacao,
+                Comprador = new Comprador { Nome = p.Comprador.Nome, Email = p.Comprador.Email },
+                Itens = p.Itens.Select(i => new ItemPedido
+                {
+                    ProdutoId = i.ProdutoId,
+                    Quantidade = i.Quantidade,
+                    PrecoUnitario = i.PrecoUnitario,
+                    Produto = new Produto { Nome = i.Produto.Nome }
+                }).ToList()
+            })
+            .ToListAsync(cancellationToken);
 
-        return new ResultadoPaginadoResponse<PedidoResponse>
-        {
-            Items = pedidos.Select(MapearParaResponse).ToList(),
-            PaginaAtual = filtro.Pagina,
-            TamanhoPagina = filtro.TamanhoPagina,
-            TotalItens = totalItens,
-            TotalPaginas = (int)Math.Ceiling(totalItens / (double)filtro.TamanhoPagina)
-        };
+        return ResultadoPaginadoResponse<PedidoResponse>.Criar(
+            pedidos.Select(MapearParaResponse).ToList(), pagina, tamanho, totalItens);
     }
 
     public async Task<PedidoResponse> BuscarPorIdAsync(Guid id)

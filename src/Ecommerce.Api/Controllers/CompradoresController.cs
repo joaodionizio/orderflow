@@ -1,5 +1,6 @@
 using Ecommerce.Api.Authorization;
 using Ecommerce.Application.Dtos.Requests;
+using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -30,9 +31,12 @@ public class CompradoresController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> Listar()
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ResultadoPaginadoResponse<CompradorResponse>>> Listar(
+        [FromQuery(Name = "")] PaginacaoRequest paginacao, CancellationToken cancellationToken)
     {
-        var compradores = await _compradorService.ListarAsync();
+        var compradores = await _compradorService.ListarAsync(paginacao, cancellationToken);
 
         return Ok(compradores);
     }

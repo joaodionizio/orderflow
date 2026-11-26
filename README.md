@@ -157,7 +157,7 @@ Respostas `429 Too Many Requests` incluem `Cache-Control: no-store` e o corpo ge
 | Preço de produto | De 0,01 a 9.999.999.999.999.999,99, conforme `decimal(18,2)` no SQL Server. O valor deve ser representável em centavos. Zeros adicionais após os centavos são aceitos. |
 | Criação e atualização de pedidos | De 1 a 100 itens. Cada item precisa de um GUID de produto diferente de zero e de uma quantidade inteira de 1 a 2.147.483.647. A criação também exige um GUID de comprador diferente de zero. Produtos repetidos continuam aceitos como linhas distintas. |
 | Total de pedido | A API rejeita antes da gravação totais que perderiam centavos ao serem representados pelo tipo `decimal` do contrato de resposta. |
-| Consulta de pedidos | A API retorna `400` se o deslocamento calculado pelos parâmetros de paginação existentes exceder o intervalo de um inteiro de 32 bits. |
+| Listagens de compradores, produtos e pedidos | Página a partir de 1, tamanho de 1 a 50 e deslocamento de até 10.000 registros. |
 
 Preços e subtotais mantêm a precisão em centavos do SQL Server. Os valores monetários das respostas continuam como números JSON. Consumidores que usam ponto flutuante binário, como `Number` em JavaScript, podem perder centavos, especialmente em valores altos. Para cálculos financeiros, leia os dígitos do JSON diretamente com um tipo ou biblioteca decimal. Pedidos legados gravados antes desta validação podem ter totais fora da precisão do contrato de resposta. [RFC 8259, seção 6](https://www.rfc-editor.org/rfc/rfc8259#section-6)
 
@@ -244,15 +244,87 @@ O custo mediano da derivação foi 6,02 vezes maior. O primeiro login que atuali
 
 ### Paginação e filtros
 
-A listagem de pedidos aceita paginação e filtros por status e comprador.
+| Listagem | `tamanhoPagina` padrão | Ordenação |
+| --- | ---: | --- |
+| `GET /api/v1/compradores` | 20 | `Nome` crescente, depois `Id` crescente |
+| `GET /api/v1/produtos` | 20 | `Nome` crescente, depois `Id` crescente |
+| `GET /api/v1/pedidos` | 10 | `DataCriacao` decrescente, depois `Id` crescente |
+
+`pagina` começa em 1 e o default também é 1. Os catálogos usam 20 para entregar uma página inicial moderada. Pedidos mantêm 10 para preservar a quantidade padrão de resposta, que inclui os itens de cada pedido. O teto de 50 limita os registros principais por resposta e `(pagina - 1) × tamanhoPagina` pode ser de até 10.000 para limitar o trabalho com páginas profundas. Por exemplo, com tamanho 50, a última página permitida é 201. Com tamanho 1, é 10.001.
+
+Os filtros opcionais de pedidos `status` e `compradorId` podem ser combinados e afetam tanto a contagem como os itens retornados. Cada requisição usa `Authorization: Bearer <token>` com perfil Admin ou Operator.
 
 ```http
-GET /api/v1/pedidos?pagina=1&tamanhoPagina=10&status=Iniciado
+GET /api/v1/compradores?pagina=2&tamanhoPagina=20
+GET /api/v1/produtos?pagina=3&tamanhoPagina=20
+GET /api/v1/pedidos?pagina=1&tamanhoPagina=10&status=Iniciado&compradorId=00000000-0000-0000-0000-000000000002
 ```
 
-```http
-GET /api/v1/pedidos?pagina=1&tamanhoPagina=10&compradorId={guid}
+Compradores e produtos agora retornam um objeto paginado em HTTP 200. Clientes que consumiam um array na raiz precisam ler `items` e solicitar as demais páginas dentro do limite de deslocamento. Pedidos mantêm os mesmos campos do objeto paginado. `totalItens` e `totalPaginas` são inteiros de 64 bits no OpenAPI. Clientes gerados que usam `int32` nesses campos devem atualizar seus modelos.
+
+Exemplo de resposta para a terceira página de produtos com 41 registros no total.
+
+```json
+{
+  "items": [
+    {
+      "id": "00000000-0000-0000-0000-000000000041",
+      "nome": "Teclado",
+      "preco": 199.90,
+      "dataCriacao": "2026-06-02T15:00:00"
+    }
+  ],
+  "paginaAtual": 3,
+  "tamanhoPagina": 20,
+  "totalItens": 41,
+  "totalPaginas": 3
+}
 ```
+
+Uma página válida além da última retorna HTTP 200 com `items: []` e os totais da consulta. Se nenhum registro corresponder à consulta, ambos os totais são zero.
+
+```json
+{
+  "items": [],
+  "paginaAtual": 1,
+  "tamanhoPagina": 10,
+  "totalItens": 0,
+  "totalPaginas": 0
+}
+```
+
+Envie os parâmetros de paginação e os filtros diretamente na query string, sem prefixo. Parâmetros fora dos limites retornam HTTP 400 antes da consulta ao banco. Por exemplo, `GET /api/v1/pedidos?pagina=202&tamanhoPagina=50` retorna o erro abaixo. Valores vazios, não numéricos ou fora do intervalo de `int32` recebem HTTP 400 com `application/problem+json`. Clientes que dependiam do ajuste automático de página ou tamanho em pedidos precisam enviar valores válidos. As respostas 401, 403 e 429 seguem as regras de autenticação, autorização e cotas.
+
+```json
+{"mensagem":"O deslocamento da página deve ser de no máximo 10000 registros."}
+```
+
+#### Comportamento no SQL Server
+
+As listagens executam uma contagem exata com `COUNT_BIG(*)` e uma consulta de dados com `ORDER BY … OFFSET … FETCH NEXT`. Compradores e produtos projetam as colunas dos DTOs. Pedidos contam apenas as linhas da tabela principal com os filtros e paginam os pedidos antes de juntar a coleção de itens. O preço unitário histórico e o cálculo em `decimal` no domínio continuam sendo usados para subtotal e total.
+
+Inserções ou exclusões concorrentes podem deslocar registros entre páginas e fazer a contagem divergir dos dados retornados na mesma chamada. O desempate por `Id` estabiliza a ordem para um conjunto de dados fixo. O total descreve todo o conjunto filtrado, que pode conter mais páginas do que o limite de deslocamento permite solicitar.
+
+O teto da página de pedidos se aplica aos pedidos principais. A resposta inclui todos os itens de cada pedido, inclusive de pedidos legados com mais de 100. Esses pedidos podem ampliar o volume lido, a memória usada e o tamanho da resposta. Totais legados continuam sujeitos à precisão e ao intervalo de `decimal`.
+
+Os índices atuais incluem as chaves primárias, o e-mail do comprador e as FKs `Pedidos.CompradorId`, `ItensPedido.PedidoId` e `ItensPedido.ProdutoId`. O experimento usou SQL Server 2022 Developer `16.0.4260.1` (compatibilidade 160), em contêiner `linux/amd64` no Docker Desktop em ARM64, com o esquema das migrations existentes. Foram geradas 30.000 linhas por tabela principal e 120.000 itens, quatro por pedido. Os pedidos foram distribuídos entre 101 compradores e quatro status. As estatísticas das quatro tabelas foram atualizadas com `FULLSCAN`.
+
+Para cada cenário, o serviço executou as consultas com EF Core 8.0.21. Os comandos capturados foram reexecutados com os mesmos parâmetros, `SET STATISTICS IO ON` e plano real (`SET STATISTICS XML ON`). As medições abaixo somam as leituras lógicas de todas as tabelas de cada comando. Os comandos medidos tiveram zero leituras físicas.
+
+| Cenário | Página × tamanho | `COUNT_BIG` | Consulta de dados |
+| --- | ---: | ---: | ---: |
+| Compradores | 201 × 50 | 286 | 430 |
+| Produtos | 201 × 50 | 308 | 308 |
+| Pedidos sem filtro | 201 × 50 | 196 | 1.597 |
+| Pedidos com `status=Iniciado` | 2 × 20 | 283 | 803 |
+| Pedidos do comprador 42 na massa sintética | 2 × 20 | 5 | 746 |
+| Pedidos do comprador 42 com `status=Iniciado` | 2 × 20 | 283 | 748 |
+
+A contagem por comprador buscou por `IX_Pedidos_CompradorId`. A contagem por status e a contagem com os dois filtros varreram a chave primária de pedidos. Os planos das consultas paginadas fizeram varredura e ordenação e buscaram os itens de pedidos por `IX_ItensPedido_PedidoId`. O teto de deslocamento limita quantos registros a página pode pular. A contagem e a ordenação ainda podem ler todo o conjunto.
+
+Leituras lógicas contam acessos a páginas de dados em memória. O tempo de execução do SQL e a latência HTTP percebida pelo cliente exigem medições próprias, incluindo, no caso da API, materialização, serialização e rede. O experimento mediu leituras e planos para os parâmetros acima. Uma comparação de desempenho exige consultas equivalentes e uma linha de base medida nas mesmas condições.
+
+Na fase 02, meça planos, leituras e latência com volume, distribuição e frequência de filtros representativos. Compare os benefícios de índices compostos para as ordenações e filtros mais usados com o custo adicional de escrita e armazenamento. Avalie também paginação por cursor para navegação profunda, custos de contagens exatas, um resumo de pedidos com consulta separada dos itens e busca em lote de produtos ao gravar pedidos.
 
 ## Tratamento de erros
 
@@ -389,7 +461,7 @@ dotnet build Ecommerce.sln --configuration Release --no-restore
 dotnet test Ecommerce.sln --configuration Release --no-build
 ```
 
-Os testes unitários de serviços usam EF Core em memória. Para executar também os testes HTTP, de provisionamento, de migration, de cadastro concorrente e de atualização concorrente de hashes, forneça `ORDERFLOW_TEST_SQLSERVER` com uma string de conexão para uma **instância SQL Server isolada**, com permissão para criar e excluir bancos. A suíte gera nomes exclusivos `OrderFlowTests_<guid>` para seus bancos e os remove ao final. Sem essa variável, os testes de integração são ignorados localmente e falham no GitHub Actions.
+Os testes unitários de serviços usam EF Core em memória. Para executar também os testes HTTP, de paginação, de provisionamento, de migration, de cadastro concorrente e de atualização concorrente de hashes, forneça `ORDERFLOW_TEST_SQLSERVER` com uma string de conexão para uma **instância SQL Server isolada**, com permissão para criar e excluir bancos. A suíte gera nomes exclusivos `OrderFlowTests_<guid>` para seus bancos e os remove ao final. Sem essa variável, os testes de integração são ignorados localmente e falham no GitHub Actions.
 
 ## Integração contínua
 

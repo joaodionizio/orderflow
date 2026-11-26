@@ -1,5 +1,6 @@
 using Ecommerce.Api.Authorization;
 using Ecommerce.Application.Dtos.Requests;
+using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -30,10 +31,12 @@ public class PedidosController : ControllerBase
     }
 
     [HttpGet]
+    [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> Listar([FromQuery] PedidoFiltroRequest filtro)
+    public async Task<ActionResult<ResultadoPaginadoResponse<PedidoResponse>>> Listar(
+        [FromQuery(Name = "")] PedidoFiltroRequest filtro, CancellationToken cancellationToken)
     {
-        var pedidos = await _pedidoService.ListarAsync(filtro);
+        var pedidos = await _pedidoService.ListarAsync(filtro, cancellationToken);
 
         return Ok(pedidos);
     }

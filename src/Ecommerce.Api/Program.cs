@@ -116,6 +116,7 @@ builder.Services.AddSwaggerGen(options =>
     });
 
     options.OperationFilter<AutorizacaoOperationFilter>();
+    options.OperationFilter<PaginacaoOperationFilter>();
     options.SchemaFilter<ValidacaoDeEntradaSchemaFilter>();
 });
 builder.Services

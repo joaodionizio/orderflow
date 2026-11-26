@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -10,10 +9,10 @@ using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Exceptions;
 using Ecommerce.Application.Interfaces;
 using Ecommerce.Infrastructure.Data;
+using Ecommerce.Infrastructure.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -131,9 +130,6 @@ public class ValidacaoDeEntradaApiTests(AutorizacaoApiFixture fixture) : IClassF
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         }
 
-        using var paginaExtrema = await EnviarAsync(client, HttpMethod.Get, $"{Pedidos}?pagina={int.MaxValue}&tamanhoPagina=50",
-            token: fixture.OperatorToken);
-        Assert.Equal(HttpStatusCode.BadRequest, paginaExtrema.StatusCode);
         Assert.Empty(banco.Executados);
 
         using var aceito = await EnviarAsync(client, HttpMethod.Post, Produtos, ProdutoComProfundidade(32), fixture.OperatorToken);
@@ -144,6 +140,61 @@ public class ValidacaoDeEntradaApiTests(AutorizacaoApiFixture fixture) : IClassF
         static string ProdutoComProfundidade(int profundidade) =>
             """{"nome":"Produto","preco":"10\u0030e-4","extra":""" +
             new string('[', profundidade - 1) + "0" + new string(']', profundidade - 1) + "}";
+    }
+
+    [SqlServerFact]
+    public async Task Listagens_RejeitamPaginacaoInvalidaNoHttpENosServicosSemExecutarSql()
+    {
+        var banco = new ComandosObservaveis();
+        using var api = CriarApi(banco);
+        using var client = CriarCliente(api);
+        await using var context = fixture.Database.CreateContext(banco);
+        var compradores = new CompradorService(context);
+        var produtos = new ProdutoService(context);
+        var pedidos = new PedidoService(context);
+        banco.Executados.Clear();
+
+        foreach (var (pagina, tamanho) in new[]
+        {
+            (0, 20), (-1, 20), (1, 0), (1, -1), (1, 51), (10_002, 1), (202, 50),
+            (int.MinValue, 1), (int.MaxValue, 50), (int.MaxValue, int.MaxValue), (1_073_741_825, 4)
+        })
+        {
+            var paginacao = new PaginacaoRequest { Pagina = pagina, TamanhoPagina = tamanho };
+            var filtro = new PedidoFiltroRequest { Pagina = pagina, TamanhoPagina = tamanho };
+            await Assert.ThrowsAsync<RegraDeNegocioException>(() => compradores.ListarAsync(paginacao));
+            await Assert.ThrowsAsync<RegraDeNegocioException>(() => produtos.ListarAsync(paginacao));
+            await Assert.ThrowsAsync<RegraDeNegocioException>(() => pedidos.ListarAsync(filtro));
+
+            foreach (var rota in new[] { Compradores, Produtos, Pedidos })
+            {
+                using var response = await EnviarAsync(client, HttpMethod.Get,
+                    $"{rota}?pagina={pagina}&tamanhoPagina={tamanho}", token: fixture.OperatorToken);
+                Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+                Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+            }
+        }
+
+        foreach (var (rota, prefixo) in new[] { (Compradores, "paginacao"), (Produtos, "paginacao"), (Pedidos, "filtro") })
+        {
+            foreach (var parametro in new[] { "pagina", "tamanhoPagina" })
+            {
+                foreach (var valor in new[] { "", "abc", "2147483648" })
+                {
+                    using var response = await EnviarAsync(client, HttpMethod.Get,
+                        $"{rota}?{parametro}={valor}", token: fixture.OperatorToken);
+                    Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+                    Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+                }
+            }
+
+            using var respostaComPrefixo = await EnviarAsync(client, HttpMethod.Get,
+                $"{rota}?pagina=abc&{prefixo}.pagina=1", token: fixture.OperatorToken);
+            Assert.Equal(HttpStatusCode.BadRequest, respostaComPrefixo.StatusCode);
+            Assert.Equal("application/problem+json", respostaComPrefixo.Content.Headers.ContentType?.MediaType);
+        }
+
+        Assert.Empty(banco.Executados);
     }
 
     [SqlServerFact]
@@ -262,6 +313,35 @@ public class ValidacaoDeEntradaApiTests(AutorizacaoApiFixture fixture) : IClassF
         var preco = schemas.GetProperty(nameof(CriarProdutoRequest)).GetProperty("properties").GetProperty("preco");
         Assert.Equal(9_999_999_999_999_999.99m, preco.GetProperty("maximum").GetDecimal());
         Assert.Equal(0.01m, preco.GetProperty("multipleOf").GetDecimal());
+
+        foreach (var (rota, tamanhoPadrao) in new[] { (Compradores, 20), (Produtos, 20), (Pedidos, 10) })
+        {
+            var operacao = paths.GetProperty(rota).GetProperty("get");
+            var parametros = operacao.GetProperty("parameters").EnumerateArray()
+                .ToDictionary(parametro => parametro.GetProperty("name").GetString()!);
+            var pagina = parametros["pagina"];
+            Assert.Contains("10000", pagina.GetProperty("description").GetString());
+            Assert.Equal(1, pagina.GetProperty("schema").GetProperty("default").GetInt32());
+            Assert.Equal(1, pagina.GetProperty("schema").GetProperty("minimum").GetInt32());
+            var tamanho = parametros["tamanhoPagina"].GetProperty("schema");
+            Assert.Equal(1, tamanho.GetProperty("minimum").GetInt32());
+            Assert.Equal(50, tamanho.GetProperty("maximum").GetInt32());
+            Assert.Equal(tamanhoPadrao, tamanho.GetProperty("default").GetInt32());
+            var respostas = operacao.GetProperty("responses");
+            var respostaPaginada = respostas.GetProperty("200").GetProperty("content").GetProperty("application/json");
+            var exemplo = respostaPaginada.GetProperty("example");
+            Assert.Empty(exemplo.GetProperty("items").EnumerateArray());
+            Assert.Equal(tamanhoPadrao, exemplo.GetProperty("tamanhoPagina").GetInt32());
+            var schema = respostaPaginada.GetProperty("schema");
+            var propriedades = schemas.GetProperty(schema.GetProperty("$ref").GetString()!.Split('/')[^1])
+                .GetProperty("properties");
+            Assert.Equal("array", propriedades.GetProperty("items").GetProperty("type").GetString());
+            Assert.Equal("int64", propriedades.GetProperty("totalItens").GetProperty("format").GetString());
+            Assert.Equal("int64", propriedades.GetProperty("totalPaginas").GetProperty("format").GetString());
+            var erros = respostas.GetProperty("400").GetProperty("content");
+            Assert.True(erros.TryGetProperty("application/json", out _));
+            Assert.True(erros.TryGetProperty("application/problem+json", out _));
+        }
     }
 
     private WebApplicationFactory<Program> CriarApi(
@@ -307,32 +387,6 @@ public class ValidacaoDeEntradaApiTests(AutorizacaoApiFixture fixture) : IClassF
         {
             Interlocked.Increment(ref Cadastros);
             return Task.CompletedTask;
-        }
-    }
-
-    private sealed class ComandosObservaveis : DbCommandInterceptor
-    {
-        public ConcurrentQueue<string> Executados { get; } = new();
-
-        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData,
-            InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
-        {
-            Executados.Enqueue(command.CommandText);
-            return new(result);
-        }
-
-        public override ValueTask<InterceptionResult<object>> ScalarExecutingAsync(DbCommand command, CommandEventData eventData,
-            InterceptionResult<object> result, CancellationToken cancellationToken = default)
-        {
-            Executados.Enqueue(command.CommandText);
-            return new(result);
-        }
-
-        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData,
-            InterceptionResult<int> result, CancellationToken cancellationToken = default)
-        {
-            Executados.Enqueue(command.CommandText);
-            return new(result);
         }
     }
 

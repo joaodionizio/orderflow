@@ -7,7 +7,8 @@ public interface ICompradorService
 {
     Task<CompradorResponse> CriarAsync(CriarCompradorRequest request);
 
-    Task<List<CompradorResponse>> ListarAsync();
+    Task<ResultadoPaginadoResponse<CompradorResponse>> ListarAsync(
+        PaginacaoRequest? paginacao = null, CancellationToken cancellationToken = default);
 
     Task<CompradorResponse> BuscarPorIdAsync(Guid id);
 }
