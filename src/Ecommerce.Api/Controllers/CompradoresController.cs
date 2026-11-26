@@ -1,4 +1,5 @@
 using Ecommerce.Api.Authorization;
+using Ecommerce.Api.Responses;
 using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Interfaces;
@@ -20,6 +21,7 @@ public class CompradoresController : ControllerBase
     }
 
     [HttpPost]
+    [ProducesResponseType<CompradorResponse>(StatusCodes.Status201Created)]
     public async Task<IActionResult> Criar(CriarCompradorRequest request)
     {
         var comprador = await _compradorService.CriarAsync(request);
@@ -42,6 +44,8 @@ public class CompradoresController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [ProducesResponseType<CompradorResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status404NotFound, "application/json")]
     public async Task<IActionResult> BuscarPorId(Guid id)
     {
         var comprador = await _compradorService.BuscarPorIdAsync(id);

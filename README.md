@@ -97,9 +97,36 @@ Regras implementadas:
 | `POST /api/v1/auth/login` com credenciais válidas | Sim | Sim | Sim | Sim |
 | `POST /api/v1/auth/registrar` | 401 | 403 | 403 | 204 |
 | Operações de compradores, produtos e pedidos | 401 | 403 | Sim | Sim |
-| `GET /health` | Sim | Sim | Sim | Sim |
+| Sondas `GET` ou `HEAD` em `/health`, `/health/live` e `/health/ready` | Sim | Sim | Sim | Sim |
 
 O cadastro recebe `nome`, `email` e `senha`. O servidor provisiona sempre um `Operator` e rejeita campos extras, incluindo `role` e `perfil`. O login retorna o token JWT em `token` e a validade em `expiraEm`. Use `Authorization: Bearer <token>` nas rotas protegidas. No Swagger em desenvolvimento, use **Authorize** para informar o JWT e consulte os perfis exigidos por operação. Tokens ausentes ou inválidos recebem `401` nas rotas protegidas. Um token válido sem o perfil exigido recebe `403`.
+
+A fallback policy do ASP.NET Core aplica a mesma regra de `Operacao` a endpoints sem metadados de autorização. A policy padrão também aplica `Operacao` quando uma rota usa somente `[Authorize]`. As policies explícitas continuam sendo `Operacao` para `Admin` ou `Operator` e `Provisionamento` para `Admin`. A validação JWT existente desconsidera perfis ausentes, desconhecidos ou ambíguos. Contas legadas sem perfil podem fazer login e recebem `403` nas operações protegidas. [Policies de autorização no ASP.NET Core](https://learn.microsoft.com/aspnet/core/security/authorization/policies?view=aspnetcore-8.0)
+
+O login e as três sondas declaram acesso anônimo. Depois das verificações de transporte e cotas, a fallback também é aplicada a requisições sem rota correspondente ou com método incompatível. Elas recebem `401` sem token válido ou `403` sem perfil operacional. Clientes com perfil operacional recebem `404` para rotas inexistentes e `405` para métodos incompatíveis com uma rota existente.
+
+#### Inventário HTTP
+
+| Métodos | Rota | Autorização |
+| --- | --- | --- |
+| POST | `/api/v1/auth/login` | Anônimo |
+| POST | `/api/v1/auth/registrar` | `Provisionamento` |
+| GET, POST | `/api/v1/compradores` | `Operacao` |
+| GET | `/api/v1/compradores/{id:guid}` | `Operacao` |
+| GET, POST | `/api/v1/produtos` | `Operacao` |
+| GET | `/api/v1/produtos/{id:guid}` | `Operacao` |
+| GET, POST | `/api/v1/pedidos` | `Operacao` |
+| GET, PUT, DELETE | `/api/v1/pedidos/{id:guid}` | `Operacao` |
+| PATCH | `/api/v1/pedidos/{id:guid}/processar` | `Operacao` |
+| PATCH | `/api/v1/pedidos/{id:guid}/enviar` | `Operacao` |
+| PATCH | `/api/v1/pedidos/{id:guid}/cancelar` | `Operacao` |
+| GET, HEAD | `/health/live`, `/health/ready`, `/health` | Anônimo |
+| GET | `/swagger`, `/swagger/index.html` e recursos da interface | Anônimo em `Development` |
+| GET | `/swagger/v1/swagger.json` | Anônimo em `Development` |
+
+#### Swagger e OpenAPI
+
+O gerador OpenAPI, o JSON e a Swagger UI são habilitados exclusivamente pelo ambiente `Development`. Em `Staging` e `Production`, esses caminhos seguem o tratamento de rotas inexistentes. O filtro OpenAPI usa a combinação de policies do ASP.NET Core para documentar Bearer, perfis e respostas `401` e `403`, inclusive quando uma ação depende da fallback. O login e as [sondas de saúde](#health-check) aparecem sem exigência de Bearer. A interface continua recebendo os cabeçalhos de segurança descritos em [Cabeçalhos e ordem do pipeline](#cabeçalhos-e-ordem-do-pipeline).
 
 | Rota | Resposta | Condição |
 | --- | --- | --- |
@@ -113,7 +140,7 @@ O `401` do login inclui `WWW-Authenticate: OrderFlowLogin`, um desafio de esquem
 
 O cadastro remove espaços das extremidades do e-mail e o converte para minúsculas. O SQL Server mantém o bloqueio da chave ou do intervalo em `IX_Usuarios_Email` entre a consulta e a inclusão, dentro da mesma transação. O cadastro retorna `409` quando essa consulta encontra o e-mail. O índice permanece único. O resultado independe do idioma da sessão e falhas SQL seguem o tratamento de erro interno. Isso inclui `2601`, que pode vir de outro índice único, e `2627`, que corresponde a uma restrição como `PRIMARY KEY` ou `UNIQUE`. Uma inclusão que falha desvincula apenas o usuário da tentativa do `ChangeTracker`. [Bloqueios no SQL Server](https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-transaction-locking-and-row-versioning-guide) · [Códigos de erro do SQL Server](https://learn.microsoft.com/en-us/sql/relational-databases/errors-events/database-engine-events-and-errors-2000-to-2999)
 
-Os logs HTTP registram conflitos e falhas inesperadas de autenticação por operação e ID de rastreio. Falhas de persistência, inclusive em outras rotas, incluem o tipo da exceção, a causa e o código SQL quando disponível. A configuração do EF Core omite seis eventos cujas exceções podem conter dados rejeitados em mensagens do servidor. As categorias de log continuam disponíveis. [Logging do EF Core](https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/extensions-logging)
+Os conflitos de cadastro são registrados por operação e ID de rastreio. A configuração do EF Core omite seis eventos cujas exceções podem conter dados rejeitados em mensagens do servidor. As categorias de log continuam disponíveis. [Logging do EF Core](https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/extensions-logging)
 
 ### Limites de requisições
 
@@ -128,14 +155,16 @@ Os valores abaixo são defaults iniciais para uma instância da API interna. Os 
 | `LoginPorIdentificador` | 5 | Tentativas com entrada válida por e-mail normalizado por janela, mesmo para contas inexistentes. |
 | `LoginConcorrente` | 4 | Logins em andamento por instância, dentro do limite global. |
 | `CadastroPorAdmin` | 10 | Solicitações de cadastro por administrador por janela. |
-| `OperacoesPorUsuario` | 120 | Chamadas de pedidos, compradores e produtos por usuário por janela, somadas entre as rotas. |
-| `SaudePorJanela` | 30 | Sondas de `/health` por instância por janela, com orçamento próprio. |
-| `SaudeConcorrente` | 1 | Sondas em andamento por instância. |
+| `OperacoesPorUsuario` | 120 | Operações autorizadas por usuário e por janela, incluindo rotas protegidas pela fallback. |
+| `SaudePorJanela` | 30 | Sondas de readiness por instância e por janela, somadas entre `/health/ready` e `/health`. |
+| `SaudeConcorrente` | 1 | Sondas de readiness simultâneas nos dois caminhos somados. |
+| `LivenessPorJanela` | 30 | Sondas de `/health/live` por instância e por janela. |
+| `LivenessConcorrente` | 1 | Sondas de liveness simultâneas por instância. |
 | `MaximoChavesPorJanela` | 1.024 | Máximo de chaves em cada tabela de origens, identificadores de login, administradores e operadores. Aceita até 100.000. |
 
 Os limites de frequência usam janelas fixas com relógio monotônico. Esse modelo admite rajadas próximas à renovação da janela. A concorrência usa o limitador nativo do ASP.NET Core e rejeita o excedente imediatamente. O teto global de 32 restringe o trabalho simultâneo, e o teto de quatro logins limita a pressão das 600 mil iterações de PBKDF2 sobre as outras operações. O orçamento de saúde limita o trabalho do SQL Server sem disputar as cotas da API.
 
-O roteamento identifica login e saúde. A API aplica os limites de concorrência primeiro, seguidos pela cota de login por origem e pela cota de frequência global ou de saúde. Essas verificações ocorrem antes do Bearer, da autorização e do model binding. Um login recusado pela cota de origem preserva o orçamento global. Operações e cadastro só consomem a cota individual após autorização, usando o GUID da claim `sub` validada. O MVC lê o JSON do login uma vez. Após a validação do DTO, a API aplica a cota por identificador antes de consultar o banco ou executar PBKDF2.
+O roteamento identifica login e saúde. A API aplica os limites de concorrência primeiro, seguidos pela cota de login por origem e pela cota de frequência da API, da readiness ou da liveness. Essas verificações ocorrem antes do Bearer, da autorização e do model binding. Um login recusado pela cota de origem preserva o orçamento global. Operações e cadastro só consomem a cota individual após autorização, usando o GUID da claim `sub` validada. O MVC lê o JSON do login uma vez. Após a validação do DTO, a API aplica a cota por identificador antes de consultar o banco ou executar PBKDF2.
 
 A origem vem de `Connection.RemoteIpAddress` após o encaminhamento de [proxies confiáveis](#https-proxies-e-hosts), quando habilitado. IPv4 e sua forma mapeada em IPv6 compartilham a mesma cota. Clientes atrás do mesmo NAT ou proxy também podem compartilhar uma cota. Conexões cujo endereço é desconhecido compartilham uma cota própria.
 
@@ -328,7 +357,9 @@ Na fase 02, meça planos, leituras e latência com volume, distribuição e freq
 
 ## Tratamento de erros
 
-A aplicação usa middleware global para padronizar falhas da API. Erros inesperados são registrados com método HTTP, caminho da requisição e `TraceId`.
+O middleware preserva os status e mensagens públicas de regras de negócio, entidade ausente, login inválido e conflito de cadastro. Para falhas inesperadas, retorna `500` com `Cache-Control: no-store` e, em requisições diferentes de `HEAD`, o corpo `{"mensagem":"Ocorreu um erro interno no servidor."}`. Os logs registram a ação ou o modelo de rota, os tipos da falha e da causa, o código SQL quando disponível e o `TraceId` da requisição. A API limita os logs de hospedagem, roteamento, encaminhamento e invocação de ações para evitar o registro de URLs e argumentos. Também silencia os logs de comandos SQL, do formatador JSON e das categorias do Bearer e de requisições rejeitadas pelo Kestrel que podem carregar exceções ou dados do protocolo.
+
+Se os cabeçalhos já tiverem sido enviados, o middleware registra os mesmos metadados e aborta a conexão. Quando o cliente desconecta, o cancelamento associado a `RequestAborted` e as exceções de conexão encerrada terminam sem novo corpo e sem log de erro interno. Cancelamentos internos são registrados como falhas e retornam `500` se a conexão estiver ativa. O MVC mantém `400 application/problem+json` com mensagens de validação e `traceId`. Erros de conversão de JSON são genéricos e usam a chave `$` quando o caminho puder conter dados enviados pelo cliente. As falhas de startup e os logs gerados diretamente pelo host ou proxy ficam fora desse middleware.
 
 | Situação | Status |
 | --- | ---: |
@@ -345,18 +376,17 @@ A aplicação usa middleware global para padronizar falhas da API. Erros inesper
 
 ## Health Check
 
-```http
-GET /health
-```
+| Rota | O que verifica | HTTP 200 | HTTP 503 |
+| --- | --- | --- | --- |
+| `/health/live` | O processo atende HTTP, sem acesso ao SQL Server. | `Healthy` | — |
+| `/health/ready` | As dependências essenciais, incluindo uma consulta simples ao SQL Server usado pela aplicação, com cancelamento após três segundos. | `Healthy` | `Unhealthy` ou `Degraded`. |
+| `/health` | Alias de compatibilidade de `/health/ready`. | `Healthy` | `Unhealthy` ou `Degraded`. |
 
-O endpoint verifica a conexão com o mesmo SQL Server usado pelo EF Core. Quando a conexão está saudável, retorna HTTP 200 com o seguinte corpo.
+Os três caminhos aceitam `GET`, que retorna apenas o estado agregado em JSON, por exemplo `{"status":"Healthy"}`, e `HEAD`, que retorna o status HTTP sem corpo. Todos desabilitam cache. A propriedade `checks` do contrato anterior de `/health` foi removida. Em readiness, `Degraded` também retorna `503` porque esse grupo contém apenas dependências essenciais. A resposta indica a condição da instância para receber tráfego. Os logs da sonda SQL registram o tipo da falha, o código SQL e a indicação de timeout, sem a exceção ou a conexão.
 
-```json
-{
-  "status": "Healthy",
-  "checks": [{ "name": "sqlserver", "status": "Healthy" }]
-}
-```
+Readiness e seu alias compartilham a cota de frequência e concorrência já existente. Liveness tem uma cota própria para continuar disponível quando readiness está saturada ou aguardando o banco. As duas cotas são independentes das operações de usuários. Sondas acima do limite recebem `429`. A sonda SQL usa cancelamento de três segundos para a abertura e a consulta, limita também o timeout de conexão do driver e desativa a recuperação automática de conexão da sonda. A indisponibilidade do processo é detectada por falha de conexão ou timeout. A consulta de readiness confirma conectividade e execução de SQL, com cobertura limitada das permissões, do esquema e da capacidade do banco. As migrations continuam no startup, portanto uma dependência indisponível nessa fase pode impedir a aplicação de abrir a porta.
+
+Fora de `Development`, configure as sondas com HTTPS e um `Host` permitido. Restrinja o acesso a esses caminhos às redes autorizadas de monitoramento no firewall, balanceador ou proxy de entrada, incluindo acesso direto ao backend. Acesso anônimo facilita a operação das sondas, e o host permitido e as cotas por instância ainda deixam margem para saturação por clientes com acesso de rede. Cabeçalhos enviados pelo cliente, inclusive os de encaminhamento, não comprovam origem autorizada.
 
 ## Como executar
 
@@ -494,12 +524,13 @@ Em uma atualização de ambiente, retire de serviço as instâncias da versão a
 ## Testes
 
 ```bash
-dotnet restore Ecommerce.sln
+dotnet restore Ecommerce.sln -p:NuGetAudit=true -p:NuGetAuditMode=all
+dotnet list Ecommerce.sln package --vulnerable --include-transitive
 dotnet build Ecommerce.sln --configuration Release --no-restore
 dotnet test Ecommerce.sln --configuration Release --no-build
 ```
 
-Os testes unitários de serviços usam EF Core em memória. Para executar também os testes HTTP, de paginação, de provisionamento, de migration, de cadastro concorrente e de atualização concorrente de hashes, forneça `ORDERFLOW_TEST_SQLSERVER` com uma string de conexão para uma **instância SQL Server isolada**, com permissão para criar e excluir bancos. A suíte gera nomes exclusivos `OrderFlowTests_<guid>` para seus bancos e os remove ao final. Sem essa variável, os testes de integração são ignorados localmente e falham no GitHub Actions.
+Os testes unitários de serviços usam EF Core em memória. Para executar também os testes de integração, forneça `ORDERFLOW_TEST_SQLSERVER` com uma string de conexão para uma **instância SQL Server isolada**. A conta precisa criar e excluir bancos e consultar as sessões de teste para verificar o cancelamento da sonda SQL. O CI usa a conta administrativa do contêiner descartável. A suíte gera nomes exclusivos `OrderFlowTests_<guid>` para seus bancos e os remove ao final. Sem essa variável, os testes de integração são ignorados localmente e falham no GitHub Actions.
 
 ## Integração contínua
 

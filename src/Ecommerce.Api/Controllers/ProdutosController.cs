@@ -1,4 +1,5 @@
 using Ecommerce.Api.Authorization;
+using Ecommerce.Api.Responses;
 using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Interfaces;
@@ -20,6 +21,7 @@ public class ProdutosController : ControllerBase
     }
 
     [HttpPost]
+    [ProducesResponseType<ProdutoResponse>(StatusCodes.Status201Created)]
     public async Task<IActionResult> Criar(CriarProdutoRequest request)
     {
         var produto = await _produtoService.CriarAsync(request);
@@ -42,6 +44,8 @@ public class ProdutosController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [ProducesResponseType<ProdutoResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status404NotFound, "application/json")]
     public async Task<IActionResult> BuscarPorId(Guid id)
     {
         var produto = await _produtoService.BuscarPorIdAsync(id);

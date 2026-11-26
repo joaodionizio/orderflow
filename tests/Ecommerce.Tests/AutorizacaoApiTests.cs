@@ -11,11 +11,14 @@ using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Domain.Entities;
 using Ecommerce.Domain.Enums;
 using Ecommerce.Infrastructure.Configuration;
+using Ecommerce.Infrastructure.Data;
 using Ecommerce.Infrastructure.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,9 +30,191 @@ namespace Ecommerce.Tests;
 public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassFixture<AutorizacaoApiFixture>
 {
     private const string Cadastro = "/api/v1/auth/registrar";
+    private const string Fallback = "/_test/fallback";
     private const long InicioDe2000 = 946684800L;
     private const long InicioDe2099 = 4070908800L;
     private static readonly string[] RotasOperacionais = ["/api/v1/compradores", "/api/v1/produtos", "/api/v1/pedidos"];
+
+    [SqlServerFact]
+    public async Task FallbackEAuthorizeSemPolicy_ExigemPerfilOperacional()
+    {
+        foreach (var rota in new[] { Fallback, "/_test/identidade" })
+        {
+            using var anonimo = await EnviarAsync(HttpMethod.Get, rota, token: null);
+            await VerificarDesafioGenericoAsync(anonimo);
+
+            foreach (var (token, status) in new[]
+            {
+                (fixture.CriarTokenDeTeste([]), HttpStatusCode.Forbidden),
+                (fixture.CriarTokenDeTeste(["Desconhecido"]), HttpStatusCode.Forbidden),
+                (fixture.CriarTokenDeTeste(["Admin", "Operator"]), HttpStatusCode.Forbidden),
+                (fixture.CriarTokenDeTeste(["Admin"], new Claim("roles", "Admin")), HttpStatusCode.Forbidden),
+                (fixture.AdminToken, HttpStatusCode.OK),
+                (fixture.OperatorToken, HttpStatusCode.OK)
+            })
+            {
+                using var resposta = await EnviarAsync(HttpMethod.Get, rota, token);
+                Assert.Equal(status, resposta.StatusCode);
+            }
+        }
+
+        var endpoint = Assert.Single(fixture.Api.Services.GetRequiredService<EndpointDataSource>()
+            .Endpoints.OfType<RouteEndpoint>(), e => $"/{e.RoutePattern.RawText?.TrimStart('/')}" == Fallback);
+        Assert.Empty(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
+        Assert.Null(endpoint.Metadata.GetMetadata<IAllowAnonymous>());
+    }
+
+    [SqlServerFact]
+    public async Task RotasInexistentesEMetodosNaoMapeados_PassamPelaFallback()
+    {
+        const string inexistente = "/api/v1/rota-inexistente";
+        foreach (var (metodo, rota, esperado) in new[]
+        {
+            (HttpMethod.Get, inexistente, HttpStatusCode.NotFound),
+            (HttpMethod.Delete, RotasOperacionais[0], HttpStatusCode.MethodNotAllowed),
+            (HttpMethod.Post, "/health/live", HttpStatusCode.MethodNotAllowed)
+        })
+        {
+            using var anonimo = await EnviarAsync(metodo, rota, token: null);
+            await VerificarDesafioGenericoAsync(anonimo);
+            using var semPerfil = await EnviarAsync(metodo, rota, fixture.CriarTokenDeTeste([]));
+            Assert.Equal(HttpStatusCode.Forbidden, semPerfil.StatusCode);
+            using var operador = await EnviarAsync(metodo, rota, fixture.OperatorToken);
+            Assert.Equal(esperado, operador.StatusCode);
+        }
+    }
+
+    [SqlServerFact]
+    public async Task Fallback_CompartilhaCotaOperacionalPorUsuario()
+    {
+        using var api = new AutorizacaoApiFixture.ApiFactory(new Dictionary<string, string?>(fixture.Database.Configuration)
+        {
+            ["RateLimiting:OperacoesPorUsuario"] = "1"
+        });
+        using var client = api.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
+
+        using var metodoNaoMapeado = await EnviarAsync(HttpMethod.Delete, RotasOperacionais[0], fixture.OperatorToken, client: client);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, metodoNaoMapeado.StatusCode);
+        using var permitida = await EnviarAsync(HttpMethod.Get, Fallback, fixture.OperatorToken, client: client);
+        Assert.Equal(HttpStatusCode.OK, permitida.StatusCode);
+        using var limitada = await EnviarAsync(HttpMethod.Get, RotasOperacionais[0], fixture.OperatorToken, client: client);
+        Assert.Equal(HttpStatusCode.TooManyRequests, limitada.StatusCode);
+        using var outroUsuario = await EnviarAsync(HttpMethod.Get, RotasOperacionais[0], fixture.AdminToken, client: client);
+        Assert.Equal(HttpStatusCode.OK, outroUsuario.StatusCode);
+    }
+
+    [SqlServerFact]
+    public void Inventario_ExigeRevisaoDeRotasMetodosEExcecoesAnonimas()
+    {
+        string[] esperado =
+        [
+            "POST /api/v1/auth/login Anônimo",
+            "POST /api/v1/auth/registrar Provisionamento",
+            "GET /api/v1/compradores Operacao", "POST /api/v1/compradores Operacao",
+            "GET /api/v1/compradores/{id:guid} Operacao",
+            "GET /api/v1/produtos Operacao", "POST /api/v1/produtos Operacao",
+            "GET /api/v1/produtos/{id:guid} Operacao",
+            "GET /api/v1/pedidos Operacao", "POST /api/v1/pedidos Operacao",
+            "GET /api/v1/pedidos/{id:guid} Operacao", "PUT /api/v1/pedidos/{id:guid} Operacao",
+            "DELETE /api/v1/pedidos/{id:guid} Operacao",
+            "PATCH /api/v1/pedidos/{id:guid}/processar Operacao",
+            "PATCH /api/v1/pedidos/{id:guid}/enviar Operacao",
+            "PATCH /api/v1/pedidos/{id:guid}/cancelar Operacao",
+            "GET /health Anônimo", "HEAD /health Anônimo",
+            "GET /health/live Anônimo", "HEAD /health/live Anônimo",
+            "GET /health/ready Anônimo", "HEAD /health/ready Anônimo"
+        ];
+
+        var rotas = fixture.Api.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>()
+            .Where(endpoint => endpoint.Metadata.GetMetadata<ControllerActionDescriptor>()?.ControllerTypeInfo.AsType() !=
+                typeof(IdentidadeDeTesteController) &&
+                endpoint.Metadata.GetMetadata<ControllerActionDescriptor>()?.ControllerTypeInfo.AsType() !=
+                typeof(FallbackDeTesteController));
+        var inventario = rotas.SelectMany(endpoint =>
+        {
+            var autorizacoes = endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>();
+            Assert.Empty(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
+            Assert.Empty(endpoint.Metadata.GetOrderedMetadata<IAuthorizationRequirementData>());
+            var permissao = endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null
+                ? "Anônimo"
+                : string.Join(",", autorizacoes.Select(autorizacao =>
+                {
+                    Assert.True(string.IsNullOrEmpty(autorizacao.Roles));
+                    Assert.True(string.IsNullOrEmpty(autorizacao.AuthenticationSchemes));
+                    return autorizacao.Policy;
+                }));
+            var metodos = Assert.IsAssignableFrom<IHttpMethodMetadata>(endpoint.Metadata.GetMetadata<IHttpMethodMetadata>());
+            Assert.NotEmpty(metodos.HttpMethods);
+            return metodos.HttpMethods.Select(metodo => $"{metodo} /{endpoint.RoutePattern.RawText!.TrimStart('/')} {permissao}");
+        });
+        Assert.Equal(esperado.Order(StringComparer.Ordinal), inventario.Order(StringComparer.Ordinal));
+    }
+
+    [SqlServerFact]
+    public async Task MutacoesNaoAutorizadas_NaoConsultamNemAlteramOBanco()
+    {
+        var comprador = new Comprador { Nome = "Comprador de teste", Email = $"{Guid.NewGuid():N}@example.test" };
+        var produto = new Produto { Nome = "Produto de teste", Preco = 10m };
+        var iniciado = PedidoComStatus(StatusPedido.Iniciado);
+        var processado = PedidoComStatus(StatusPedido.Processado);
+        await using (var inicial = fixture.Database.CreateContext())
+        {
+            inicial.AddRange(iniciado, processado);
+            await inicial.SaveChangesAsync();
+        }
+
+        var banco = new ComandosObservaveis();
+        using var api = fixture.Api.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+            services.AddScoped<ApplicationDbContext>(_ => fixture.Database.CreateContext(banco))));
+        using var client = api.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
+
+        var compradorNovo = $"{Guid.NewGuid():N}@example.test";
+        var produtoNovo = Guid.NewGuid().ToString();
+        var itens = new[] { new { produtoId = produto.Id, quantidade = 2 } };
+        (HttpMethod Metodo, string Rota, object? Corpo)[] mutacoes =
+        [
+            (HttpMethod.Post, RotasOperacionais[0], new { nome = "Comprador novo", email = compradorNovo }),
+            (HttpMethod.Post, RotasOperacionais[1], new { nome = produtoNovo, preco = 20m }),
+            (HttpMethod.Post, RotasOperacionais[2], new { compradorId = comprador.Id, itens }),
+            (HttpMethod.Put, $"/api/v1/pedidos/{iniciado.Id}", new { itens }),
+            (HttpMethod.Patch, $"/api/v1/pedidos/{iniciado.Id}/processar", null),
+            (HttpMethod.Patch, $"/api/v1/pedidos/{processado.Id}/enviar", null),
+            (HttpMethod.Patch, $"/api/v1/pedidos/{iniciado.Id}/cancelar", null),
+            (HttpMethod.Delete, $"/api/v1/pedidos/{iniciado.Id}", null)
+        ];
+        var semPerfil = fixture.CriarTokenDeTeste([]);
+        foreach (var (metodo, rota, corpo) in mutacoes)
+        {
+            using var anonimo = await EnviarAsync(metodo, rota, null, corpo, client);
+            Assert.Equal(HttpStatusCode.Unauthorized, anonimo.StatusCode);
+            using var proibido = await EnviarAsync(metodo, rota, semPerfil, corpo, client);
+            Assert.Equal(HttpStatusCode.Forbidden, proibido.StatusCode);
+        }
+
+        var conta = NovaConta();
+        using var cadastroAnonimo = await EnviarAsync(HttpMethod.Post, Cadastro, null, conta, client);
+        Assert.Equal(HttpStatusCode.Unauthorized, cadastroAnonimo.StatusCode);
+        using var cadastroOperador = await EnviarAsync(HttpMethod.Post, Cadastro, fixture.OperatorToken, conta, client);
+        Assert.Equal(HttpStatusCode.Forbidden, cadastroOperador.StatusCode);
+        Assert.Empty(banco.Executados);
+
+        await using var final = fixture.Database.CreateContext();
+        Assert.False(await final.Usuarios.AnyAsync(u => u.Email == conta.Email));
+        Assert.False(await final.Compradores.AnyAsync(c => c.Email == compradorNovo));
+        Assert.False(await final.Produtos.AnyAsync(p => p.Nome == produtoNovo));
+        var pedidos = await final.Pedidos.Include(p => p.Itens).Where(p => p.CompradorId == comprador.Id).ToListAsync();
+        Assert.Equal(2, pedidos.Count);
+        Assert.Equal(StatusPedido.Iniciado, Assert.Single(pedidos, p => p.Id == iniciado.Id).Status);
+        Assert.Equal(StatusPedido.Processado, Assert.Single(pedidos, p => p.Id == processado.Id).Status);
+        Assert.All(pedidos, pedido => Assert.Equal(1, Assert.Single(pedido.Itens).Quantidade));
+
+        Pedido PedidoComStatus(StatusPedido status) => new()
+        {
+            Comprador = comprador,
+            Status = status,
+            Itens = [new ItemPedido { Produto = produto, Quantidade = 1, PrecoUnitario = produto.Preco }]
+        };
+    }
 
     [SqlServerFact]
     public async Task Swagger_EmDevelopmentProtegeHtmlContraEnquadramento()
@@ -40,6 +225,10 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
         Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
         TransporteHttpTests.VerificarCabecalhos(response, html: true);
         Assert.False(response.Headers.Contains("Content-Security-Policy"));
+
+        using var bundle = await fixture.Client.GetAsync("/swagger/swagger-ui-bundle.js");
+        Assert.Equal(HttpStatusCode.OK, bundle.StatusCode);
+        TransporteHttpTests.VerificarCabecalhos(bundle);
     }
 
     [SqlServerFact]
@@ -479,7 +668,11 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
     [SqlServerFact]
     public async Task Swagger_DocumentaBearerEPerfisSomenteNasRotasProtegidas()
     {
-        using var swagger = JsonDocument.Parse(await fixture.Client.GetStringAsync("/swagger/v1/swagger.json"));
+        using var respostaSwagger = await fixture.Client.GetAsync("/swagger/v1/swagger.json");
+        Assert.Equal(HttpStatusCode.OK, respostaSwagger.StatusCode);
+        Assert.Equal("application/json", respostaSwagger.Content.Headers.ContentType?.MediaType);
+        TransporteHttpTests.VerificarCabecalhos(respostaSwagger);
+        using var swagger = JsonDocument.Parse(await respostaSwagger.Content.ReadAsStringAsync());
         var paths = swagger.RootElement.GetProperty("paths");
         var login = paths.GetProperty("/api/v1/auth/login").GetProperty("post");
         Assert.False(login.TryGetProperty("security", out _));
@@ -501,16 +694,66 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
         var conflito = respostasCadastro.GetProperty("409");
         Assert.Equal("application/json", Assert.Single(conflito.GetProperty("content").EnumerateObject()).Name);
 
-        var pedidos = paths.GetProperty("/api/v1/pedidos").GetProperty("get");
-        Assert.Equal("Perfil Admin ou Operator obrigatório.", pedidos.GetProperty("description").GetString());
+        foreach (var rota in RotasOperacionais)
+        {
+            var criacao = paths.GetProperty(rota).GetProperty("post").GetProperty("responses");
+            Assert.True(criacao.TryGetProperty("201", out _));
+            Assert.False(criacao.TryGetProperty("200", out _));
+            var entradaInvalida = criacao.GetProperty("400").GetProperty("content");
+            Assert.True(entradaInvalida.TryGetProperty("application/json", out _));
+            Assert.True(entradaInvalida.TryGetProperty("application/problem+json", out _));
+            var busca = paths.GetProperty($"{rota}/{{id}}").GetProperty("get").GetProperty("responses");
+            Assert.True(busca.GetProperty("404").GetProperty("content").TryGetProperty("application/json", out _));
+        }
 
-        foreach (var operacao in new[] { login, cadastro, pedidos })
+        var pedido = paths.GetProperty("/api/v1/pedidos/{id}");
+        Assert.True(pedido.GetProperty("put").GetProperty("responses").TryGetProperty("204", out _));
+        Assert.True(pedido.GetProperty("delete").GetProperty("responses").TryGetProperty("204", out _));
+
+        var operacoes = paths.EnumerateObject()
+            .Where(path => path.Name == Fallback || RotasOperacionais.Any(rota => path.Name.StartsWith(rota, StringComparison.Ordinal)))
+            .SelectMany(path => path.Value.EnumerateObject().Select(operacao => operacao.Value)).ToArray();
+        Assert.Equal(15, operacoes.Length);
+        foreach (var operacao in operacoes)
+        {
+            Assert.Contains("Perfil Admin ou Operator obrigatório.", operacao.GetProperty("description").GetString());
+            Assert.True(operacao.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+            var respostas = operacao.GetProperty("responses");
+            Assert.Equal("Bearer", EsquemaDoDesafio(respostas.GetProperty("401")));
+            Assert.True(respostas.TryGetProperty("403", out _));
+        }
+
+        foreach (var operacao in operacoes.Append(login).Append(cadastro))
         {
             var excesso = operacao.GetProperty("responses").GetProperty("429");
             Assert.True(excesso.GetProperty("content").TryGetProperty("application/json", out _));
             var cabecalhos = excesso.GetProperty("headers");
             Assert.True(cabecalhos.TryGetProperty("Retry-After", out _));
             Assert.True(cabecalhos.TryGetProperty("Cache-Control", out _));
+            Assert.True(operacao.GetProperty("responses").GetProperty("500").GetProperty("content")
+                .TryGetProperty("application/json", out _));
+        }
+
+        foreach (var rota in new[] { "/health/live", "/health/ready", "/health" })
+        {
+            var path = paths.GetProperty(rota);
+            foreach (var metodo in new[] { "get", "head" })
+            {
+                var operacao = path.GetProperty(metodo);
+                Assert.False(operacao.TryGetProperty("security", out _));
+                var respostas = operacao.GetProperty("responses");
+                Assert.False(respostas.TryGetProperty("401", out _));
+                Assert.False(respostas.TryGetProperty("403", out _));
+                var readiness = rota != "/health/live";
+                Assert.Equal(readiness, respostas.TryGetProperty("503", out _));
+                foreach (var codigo in readiness ? new[] { "200", "503", "429" } : ["200", "429"])
+                {
+                    var resposta = respostas.GetProperty(codigo);
+                    Assert.True(resposta.GetProperty("headers").TryGetProperty("Cache-Control", out _));
+                    Assert.Equal(metodo == "get", resposta.TryGetProperty("content", out var conteudo) &&
+                        conteudo.TryGetProperty("application/json", out _));
+                }
+            }
         }
 
         static string? EsquemaDoDesafio(JsonElement resposta) => resposta
@@ -524,14 +767,15 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
         Senha = Convert.ToHexString(RandomNumberGenerator.GetBytes(16))
     };
 
-    private async Task<HttpResponseMessage> EnviarAsync(HttpMethod method, string rota, string? token, object? body = null)
+    private async Task<HttpResponseMessage> EnviarAsync(HttpMethod method, string rota, string? token, object? body = null,
+        HttpClient? client = null)
     {
         using var request = new HttpRequestMessage(method, rota);
         if (token is not null)
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         if (body is not null)
             request.Content = JsonContent.Create(body);
-        return await fixture.Client.SendAsync(request);
+        return await (client ?? fixture.Client).SendAsync(request);
     }
 }
 
@@ -636,4 +880,22 @@ public sealed class IdentidadeDeTesteController : ControllerBase
         operador = User.IsInRole("Operator"),
         claimMapeada = User.HasClaim(claim => claim.Type is ClaimTypes.NameIdentifier or ClaimTypes.Role)
     });
+}
+
+[ApiController]
+[Route("/_test/fallback")]
+public sealed class FallbackDeTesteController : ControllerBase
+{
+    [HttpGet]
+    public IActionResult Obter() => Ok();
+
+    [HttpGet("falha/{entrada}")]
+    [ApiExplorerSettings(IgnoreApi = true)]
+    public IActionResult Falhar(string entrada)
+    {
+        HttpContext.TraceIdentifier = "rastreio-de-teste";
+        Response.Headers["X-Dados-Internos"] = entrada;
+        Response.ContentLength = 1;
+        throw new InvalidOperationException(entrada, new FormatException($"Falha interna: {entrada}"));
+    }
 }

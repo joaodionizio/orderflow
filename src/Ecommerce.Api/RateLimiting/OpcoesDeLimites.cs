@@ -18,6 +18,8 @@ internal sealed class OpcoesDeLimites
     [Range(1, MaximoPorJanela)] public int OperacoesPorUsuario { get; init; } = 120;
     [Range(1, MaximoPorJanela)] public int SaudePorJanela { get; init; } = 30;
     [Range(1, MaximoConcorrente)] public int SaudeConcorrente { get; init; } = 1;
+    [Range(1, MaximoPorJanela)] public int LivenessPorJanela { get; init; } = 30;
+    [Range(1, MaximoConcorrente)] public int LivenessConcorrente { get; init; } = 1;
     [Range(1, 100_000)] public int MaximoChavesPorJanela { get; init; } = 1024;
 
     internal TimeSpan Janela => TimeSpan.FromSeconds(JanelaSegundos);

@@ -19,6 +19,9 @@ internal sealed class RespostaDeLimite(TimeSpan? espera) : IActionResult
         if (espera is { } intervalo)
             response.Headers.RetryAfter = Math.Max(1, Math.Ceiling(intervalo.TotalSeconds)).ToString(CultureInfo.InvariantCulture);
 
-        return response.WriteAsJsonAsync(Corpo, cancellationToken: context.RequestAborted);
+        response.ContentType = "application/json; charset=utf-8";
+        return HttpMethods.IsHead(context.Request.Method)
+            ? Task.CompletedTask
+            : response.WriteAsJsonAsync(Corpo, cancellationToken: context.RequestAborted);
     }
 }

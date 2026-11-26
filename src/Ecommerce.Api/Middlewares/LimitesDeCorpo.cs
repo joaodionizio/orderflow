@@ -66,7 +66,9 @@ internal sealed class LimitesDeCorpo : IAsyncAlwaysRunResultFilter
             response.Headers.Connection = "close";
 
         response.ContentLength = CorpoDeExcesso.Length;
-        return response.Body.WriteAsync(CorpoDeExcesso, context.RequestAborted).AsTask();
+        return HttpMethods.IsHead(context.Request.Method)
+            ? Task.CompletedTask
+            : response.Body.WriteAsync(CorpoDeExcesso, context.RequestAborted).AsTask();
     }
 
     private static bool PodeTerCorpo(HttpContext context) =>

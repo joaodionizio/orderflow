@@ -1,4 +1,5 @@
 using Ecommerce.Api.Authorization;
+using Ecommerce.Api.Responses;
 using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Interfaces;
@@ -20,6 +21,8 @@ public class PedidosController : ControllerBase
     }
 
     [HttpPost]
+    [ProducesResponseType<PedidoResponse>(StatusCodes.Status201Created)]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status404NotFound, "application/json")]
     public async Task<IActionResult> Criar(CriarPedidoRequest request)
     {
         var pedido = await _pedidoService.CriarAsync(request);
@@ -42,6 +45,8 @@ public class PedidosController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [ProducesResponseType<PedidoResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status404NotFound, "application/json")]
     public async Task<IActionResult> BuscarPorId(Guid id)
     {
         var pedido = await _pedidoService.BuscarPorIdAsync(id);
@@ -50,6 +55,8 @@ public class PedidosController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status404NotFound, "application/json")]
     public async Task<IActionResult> Atualizar(Guid id, AtualizarPedidoRequest request)
     {
         await _pedidoService.AtualizarAsync(id, request);
@@ -58,6 +65,9 @@ public class PedidosController : ControllerBase
     }
 
     [HttpPatch("{id:guid}/processar")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status400BadRequest, "application/json")]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status404NotFound, "application/json")]
     public async Task<IActionResult> Processar(Guid id)
     {
         await _pedidoService.ProcessarAsync(id);
@@ -66,6 +76,9 @@ public class PedidosController : ControllerBase
     }
 
     [HttpPatch("{id:guid}/enviar")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status400BadRequest, "application/json")]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status404NotFound, "application/json")]
     public async Task<IActionResult> Enviar(Guid id)
     {
         await _pedidoService.EnviarAsync(id);
@@ -74,6 +87,9 @@ public class PedidosController : ControllerBase
     }
 
     [HttpPatch("{id:guid}/cancelar")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status400BadRequest, "application/json")]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status404NotFound, "application/json")]
     public async Task<IActionResult> Cancelar(Guid id)
     {
         await _pedidoService.CancelarAsync(id);
@@ -82,6 +98,9 @@ public class PedidosController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status400BadRequest, "application/json")]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status404NotFound, "application/json")]
     public async Task<IActionResult> Excluir(Guid id)
     {
         await _pedidoService.ExcluirAsync(id);

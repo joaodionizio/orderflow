@@ -1,15 +1,13 @@
-using System.Text.Json;
 using Ecommerce.Api.Authorization;
 using Ecommerce.Api.Commands;
+using Ecommerce.Api.Health;
 using Ecommerce.Api.Middlewares;
 using Ecommerce.Api.OpenApi;
 using Ecommerce.Api.RateLimiting;
-using Ecommerce.Domain.Enums;
 using Ecommerce.Infrastructure;
 using Ecommerce.Infrastructure.Configuration;
 using Ecommerce.Infrastructure.Data;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.EntityFrameworkCore;
@@ -30,8 +28,19 @@ var connectionString = SqlServerConfiguration.GetRequiredConnectionString(builde
 var jwt = JwtConfiguration.Load(builder.Configuration);
 
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = LimitesDeCorpo.Padrao);
+// Hospedagem, roteamento e MVC podem registrar URLs e argumentos fornecidos pelo cliente.
+builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
+builder.Logging.AddFilter("Microsoft.AspNetCore.Routing", LogLevel.Warning);
+builder.Logging.AddFilter("Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker", LogLevel.Warning);
+builder.Logging.AddFilter("Microsoft.AspNetCore.HttpOverrides", LogLevel.Warning);
+// Esses eventos podem carregar exceções de autenticação e detalhes do protocolo original.
+builder.Logging.AddFilter(typeof(JwtBearerHandler).FullName, LogLevel.None);
+builder.Logging.AddFilter("Microsoft.AspNetCore.Server.Kestrel.BadRequests", LogLevel.None);
 // Em .NET 8 o formatador pode registrar mensagens JSON com entrada do cliente em nível Debug.
 builder.Logging.AddFilter(typeof(SystemTextJsonInputFormatter).FullName, LogLevel.None);
+builder.Logging.AddFilter(DbLoggerCategory.Database.Name, LogLevel.Warning);
+builder.Logging.AddFilter(DbLoggerCategory.Database.Command.Name, LogLevel.None);
+builder.Logging.AddFilter(DbLoggerCategory.Query.Name, LogLevel.Warning);
 builder.Services.AddSingleton(jwt);
 builder.Services.AdicionarLimitesHttp(OpcoesDeLimites.Carregar(builder.Configuration));
 builder.Services.AddControllers(options =>
@@ -97,32 +106,27 @@ builder.Services
             OnTokenValidated = ValidacaoDeClaimsJwt.ValidarAsync
         };
     });
-builder.Services.AddAuthorization(options =>
+builder.Services.AddAuthorization(PoliticasDeAcesso.Configurar);
+if (builder.Environment.IsDevelopment())
 {
-    options.AddPolicy(PoliticasDeAcesso.Operacao, policy =>
-        PoliticasDeAcesso.ExigirPerfil(policy, nameof(PerfilUsuario.Admin), nameof(PerfilUsuario.Operator)));
-    options.AddPolicy(PoliticasDeAcesso.Provisionamento, policy =>
-        PoliticasDeAcesso.ExigirPerfil(policy, nameof(PerfilUsuario.Admin)));
-});
-builder.Services.AddSwaggerGen(options =>
-{
-    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    builder.Services.AddSwaggerGen(options =>
     {
-        Name = "Authorization",
-        Type = SecuritySchemeType.Http,
-        Scheme = "bearer",
-        BearerFormat = "JWT",
-        In = ParameterLocation.Header,
-        Description = "Informe o token JWT."
-    });
+        options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+        {
+            Name = "Authorization",
+            Type = SecuritySchemeType.Http,
+            Scheme = "bearer",
+            BearerFormat = "JWT",
+            In = ParameterLocation.Header,
+            Description = "Informe o token JWT."
+        });
 
-    options.OperationFilter<AutorizacaoOperationFilter>();
-    options.OperationFilter<PaginacaoOperationFilter>();
-    options.SchemaFilter<ValidacaoDeEntradaSchemaFilter>();
-});
-builder.Services
-    .AddHealthChecks()
-    .AddSqlServer(connectionString, name: "sqlserver");
+        options.OperationFilter<AutorizacaoOperationFilter>();
+        options.OperationFilter<PaginacaoOperationFilter>();
+        options.SchemaFilter<ValidacaoDeEntradaSchemaFilter>();
+    });
+}
+builder.Services.AdicionarSondasDeSaude(connectionString);
 builder.Services.AddInfrastructure(connectionString);
 
 await using var app = builder.Build();
@@ -157,26 +161,7 @@ app.Use(LimitesHttp.LimitarUsuarioAsync);
 app.Use(LimitesDeCorpo.VerificarAsync);
 
 app.MapControllers();
-app.MapHealthChecks("/health", new HealthCheckOptions
-{
-    ResponseWriter = async (context, report) =>
-    {
-        context.Response.ContentType = "application/json";
-
-        var response = new
-        {
-            status = report.Status.ToString(),
-            checks = report.Entries.Select(entry => new
-            {
-                name = entry.Key,
-                status = entry.Value.Status.ToString()
-            })
-        };
-
-        await context.Response.WriteAsync(
-            JsonSerializer.Serialize(response));
-    }
-}).WithMetadata(LimitesHttp.MarcadorDeSaude);
+app.MapearSondasDeSaude();
 
 await app.RunAsync();
 

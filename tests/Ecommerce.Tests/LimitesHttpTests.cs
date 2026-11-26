@@ -8,6 +8,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Ecommerce.Api.Health;
 using Ecommerce.Api.RateLimiting;
 using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Dtos.Responses;
@@ -345,18 +346,21 @@ public class LimitesHttpTests(AutorizacaoApiFixture fixture) : IClassFixture<Aut
     {
         var relogio = new RelogioDeTeste();
         var sonda = new SondaObservavel();
-        using var raiz = CriarApi(relogio, new MonitorDeAutenticacao(), ("GlobalPorJanela", "1"), ("SaudePorJanela", "1"));
+        using var raiz = CriarApi(relogio, new MonitorDeAutenticacao(),
+            ("GlobalPorJanela", "1"), ("SaudePorJanela", "1"), ("LivenessPorJanela", "2"));
         using var api = raiz.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
-            services.AddHealthChecks().AddCheck("sonda-teste", sonda)));
+            services.AddHealthChecks().AddCheck("sonda-teste", sonda, tags: [SondasDeSaude.Readiness])));
         using var client = CriarCliente(api);
         var emCurso = client.GetAsync(Saude);
         try
         {
             await sonda.Iniciou.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            using var concorrente = await client.GetAsync(Saude);
+            using var concorrente = await client.GetAsync("/health/ready");
             await VerificarRejeicaoAsync(concorrente, segundos: null);
             using var operacao = await EnviarAsync(client, HttpMethod.Get, Produtos, fixture.OperatorToken);
             Assert.Equal(HttpStatusCode.OK, operacao.StatusCode);
+            using var liveness = await client.GetAsync("/health/live");
+            Assert.Equal(HttpStatusCode.OK, liveness.StatusCode);
         }
         finally
         {
@@ -365,14 +369,22 @@ public class LimitesHttpTests(AutorizacaoApiFixture fixture) : IClassFixture<Aut
             Assert.Equal(HttpStatusCode.OK, concluida.StatusCode);
         }
 
-        using var foraDaCota = await client.GetAsync(Saude);
+        using var foraDaCota = await client.GetAsync("/health/ready");
         await VerificarRejeicaoAsync(foraDaCota, segundos: 60);
+        using var livenessDisponivel = await client.GetAsync("/health/live");
+        Assert.Equal(HttpStatusCode.OK, livenessDisponivel.StatusCode);
+        using var head = new HttpRequestMessage(HttpMethod.Head, "/health/live");
+        using var livenessForaDaCota = await client.SendAsync(head);
+        Assert.Equal(HttpStatusCode.TooManyRequests, livenessForaDaCota.StatusCode);
+        Assert.Equal(TimeSpan.FromSeconds(60), livenessForaDaCota.Headers.RetryAfter?.Delta);
+        Assert.True(livenessForaDaCota.Headers.CacheControl?.NoStore);
+        Assert.Empty(await livenessForaDaCota.Content.ReadAsStringAsync());
         Assert.Equal(1, sonda.Execucoes);
         using var foraDaCotaGlobal = await EnviarAsync(client, HttpMethod.Get, Produtos, fixture.AdminToken);
         await VerificarRejeicaoAsync(foraDaCotaGlobal, segundos: 60);
 
         relogio.Avancar(TimeSpan.FromMinutes(1));
-        using var recuperada = await client.GetAsync(Saude);
+        using var recuperada = await client.GetAsync("/health/ready");
         Assert.Equal(HttpStatusCode.OK, recuperada.StatusCode);
         Assert.Equal(2, sonda.Execucoes);
     }
@@ -561,6 +573,8 @@ public class ConfiguracaoDeLimitesTests
         Assert.Equal(120, opcoes.OperacoesPorUsuario);
         Assert.Equal(30, opcoes.SaudePorJanela);
         Assert.Equal(1, opcoes.SaudeConcorrente);
+        Assert.Equal(30, opcoes.LivenessPorJanela);
+        Assert.Equal(1, opcoes.LivenessConcorrente);
         Assert.Equal(1024, opcoes.MaximoChavesPorJanela);
     }
 

@@ -143,6 +143,30 @@ public class ValidacaoDeEntradaApiTests(AutorizacaoApiFixture fixture) : IClassF
     }
 
     [SqlServerFact]
+    public async Task QueryInvalida_NaoExpoeValoresRejeitadosNaRespostaNemNosLogs()
+    {
+        var banco = new ComandosObservaveis();
+        using var logs = new CapturaDeLogs();
+        using var api = CriarApi(banco, logs: logs);
+        using var client = CriarCliente(api);
+        banco.Executados.Clear();
+        const string rejeitado = "valor-privado-na-query";
+
+        using var resposta = await EnviarAsync(client, HttpMethod.Get,
+            $"{Pedidos}?pagina={rejeitado}&compradorId={rejeitado}", token: fixture.OperatorToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, resposta.StatusCode);
+        Assert.Equal("application/problem+json", resposta.Content.Headers.ContentType?.MediaType);
+        var corpo = await resposta.Content.ReadAsStringAsync();
+        Assert.DoesNotContain(rejeitado, corpo);
+        using var problema = JsonDocument.Parse(corpo);
+        Assert.True(problema.RootElement.TryGetProperty("traceId", out _));
+        Assert.Empty(banco.Executados);
+        Assert.NotEmpty(logs.Mensagens);
+        Assert.DoesNotContain(logs.Mensagens, mensagem => mensagem.Contains(rejeitado));
+    }
+
+    [SqlServerFact]
     public async Task Listagens_RejeitamPaginacaoInvalidaNoHttpENosServicosSemExecutarSql()
     {
         var banco = new ComandosObservaveis();

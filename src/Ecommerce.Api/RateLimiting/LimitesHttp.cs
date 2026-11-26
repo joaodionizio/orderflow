@@ -9,7 +9,8 @@ namespace Ecommerce.Api.RateLimiting;
 internal static class LimitesHttp
 {
     public const string Login = "Login";
-    public static readonly object MarcadorDeSaude = new Marcador();
+    public static readonly object CotaDeReadiness = new Marcador(OrcamentoHttp.Readiness);
+    public static readonly object CotaDeLiveness = new Marcador(OrcamentoHttp.Liveness);
 
     public static void AdicionarLimitesHttp(this IServiceCollection services, OpcoesDeLimites opcoes)
     {
@@ -17,10 +18,15 @@ internal static class LimitesHttp
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<CotasDeRequisicao>();
         services.AddScoped<LimiteDeIdentificadorLoginFilter>();
-        services.AddSingleton(_ => PartitionedRateLimiter.Create<HttpContext, bool>(context =>
-                RateLimitPartition.GetConcurrencyLimiter(EhSaude(context), saude => new ConcurrencyLimiterOptions
+        services.AddSingleton(_ => PartitionedRateLimiter.Create<HttpContext, OrcamentoHttp>(context =>
+                RateLimitPartition.GetConcurrencyLimiter(ObterOrcamento(context), orcamento => new ConcurrencyLimiterOptions
                 {
-                    PermitLimit = saude ? opcoes.SaudeConcorrente : opcoes.GlobalConcorrente,
+                    PermitLimit = orcamento switch
+                    {
+                        OrcamentoHttp.Readiness => opcoes.SaudeConcorrente,
+                        OrcamentoHttp.Liveness => opcoes.LivenessConcorrente,
+                        _ => opcoes.GlobalConcorrente
+                    },
                     QueueLimit = 0
                 })));
 
@@ -47,33 +53,33 @@ internal static class LimitesHttp
             return RespostaDeLimite.EscreverAsync(context, esperaPorOrigem);
         }
 
-        return cotas.ConsumirOrcamento(EhSaude(context)) is { } espera
+        return cotas.ConsumirOrcamento(ObterOrcamento(context)) is { } espera
             ? RespostaDeLimite.EscreverAsync(context, espera)
             : next(context);
     }
 
     public static Task LimitarUsuarioAsync(HttpContext context, RequestDelegate next)
     {
-        var metadados = context.GetEndpoint()?.Metadata;
-        if (metadados is null || metadados.GetMetadata<IAllowAnonymous>() is not null ||
+        if (context.GetEndpoint() is not RouteEndpoint endpoint || endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null ||
             context.User.Identity?.IsAuthenticated != true ||
             !Guid.TryParseExact(context.User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value, "D", out var usuario))
         {
             return next(context);
         }
 
-        var autorizacoes = metadados.GetOrderedMetadata<IAuthorizeData>();
+        var autorizacoes = endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>();
         var cotas = context.RequestServices.GetRequiredService<CotasDeRequisicao>();
         var espera = autorizacoes.Any(autorizacao => autorizacao.Policy == PoliticasDeAcesso.Provisionamento)
             ? cotas.ConsumirCadastro(usuario)
-            : autorizacoes.Any(autorizacao => autorizacao.Policy == PoliticasDeAcesso.Operacao)
-                ? cotas.ConsumirOperacao(usuario)
-                : null;
+            : cotas.ConsumirOperacao(usuario);
 
         return espera is null ? next(context) : RespostaDeLimite.EscreverAsync(context, espera);
     }
 
-    private static bool EhSaude(HttpContext context) => context.GetEndpoint()?.Metadata.GetMetadata<Marcador>() is not null;
+    private static OrcamentoHttp ObterOrcamento(HttpContext context) =>
+        context.GetEndpoint()?.Metadata.GetMetadata<Marcador>()?.Orcamento ?? OrcamentoHttp.Api;
 
-    private sealed class Marcador;
+    private sealed record Marcador(OrcamentoHttp Orcamento);
 }
+
+internal enum OrcamentoHttp { Api, Readiness, Liveness }
