@@ -7,6 +7,8 @@ namespace Ecommerce.Tests;
 
 public sealed class HashDeSenhaTests
 {
+    internal const string EntradaDoVetorDeReferencia = "OrderFlow public PBKDF2 reference";
+
     [Fact]
     public void Gerar_UsaSaltAleatorioEValidaASenhaIntegral()
     {
@@ -35,6 +37,36 @@ public sealed class HashDeSenhaTests
 
         Assert.Equal(ResultadoHashDeSenha.AtualizacaoNecessaria, HashDeSenha.Verificar(senha, registro));
         Assert.Equal(ResultadoHashDeSenha.SenhaIncorreta, HashDeSenha.Verificar(senha + "x", registro));
+    }
+
+    [Fact]
+    public void VerificarParaLogin_ExecutaOCustoPadraoQuandoRegistroEstaAusenteOuCorrompido()
+    {
+        Assert.Equal(ResultadoHashDeSenha.Valido,
+            HashDeSenha.Verificar(EntradaDoVetorDeReferencia, HashDeSenha.RegistroDeReferencia));
+
+        foreach (var registro in new[] { null, "corrompido" })
+        {
+            var resultado = HashDeSenha.VerificarParaLogin(EntradaDoVetorDeReferencia, registro, out var iteracoes);
+
+            Assert.Equal(ResultadoHashDeSenha.RegistroInvalido, resultado);
+            Assert.Equal(600_000, iteracoes);
+        }
+    }
+
+    [Theory]
+    [InlineData(100_000, 600_000)]
+    [InlineData(599_999, 600_000)]
+    [InlineData(600_000, 600_000)]
+    [InlineData(1_200_000, 1_200_000)]
+    public void VerificarParaLogin_ExecutaPeloMenosOCustoPadraoQuandoASenhaDiverge(int custo, int custoEsperado)
+    {
+        var registro = GerarHashDeTeste("senha original de teste", custo);
+
+        var resultado = HashDeSenha.VerificarParaLogin("senha incorreta", registro, out var iteracoes);
+
+        Assert.Equal(ResultadoHashDeSenha.SenhaIncorreta, resultado);
+        Assert.Equal(custoEsperado, iteracoes);
     }
 
     [Theory]

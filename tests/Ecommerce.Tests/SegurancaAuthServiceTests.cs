@@ -39,13 +39,27 @@ public sealed class SegurancaAuthServiceTests : ServiceTestBase
         var logger = new LoggerDeTeste();
         var service = new AuthService(context, CriarJwt(), logger);
 
-        var erro = await Assert.ThrowsAsync<RegraDeNegocioException>(
+        var erro = await Assert.ThrowsAsync<CredenciaisInvalidasException>(
             () => service.LoginAsync(new LoginRequest { Email = conta.Email, Senha = conta.Senha }));
 
         Assert.Equal("E-mail ou senha inválidos.", erro.Message);
         var registro = Assert.Single(logger.Registros);
         Assert.Equal(LogLevel.Warning, registro.Nivel);
         Assert.Equal("Registro de hash de senha inválido encontrado durante a autenticação.", registro.Mensagem);
+    }
+
+    [Fact]
+    public async Task Login_NaoAutenticaContaAusenteMesmoSeEntradaCorresponderAoHashDeReferencia()
+    {
+        await using var context = CriarContexto();
+        var logger = new LoggerDeTeste();
+        var service = new AuthService(context, CriarJwt(), logger);
+
+        var erro = await Assert.ThrowsAsync<CredenciaisInvalidasException>(() => service.LoginAsync(
+            new LoginRequest { Email = AutorizacaoApiTests.NovaConta().Email, Senha = HashDeSenhaTests.EntradaDoVetorDeReferencia }));
+
+        Assert.Equal("E-mail ou senha inválidos.", erro.Message);
+        Assert.Empty(logger.Registros);
     }
 
     private static JwtConfiguration CriarJwt() => JwtConfiguration.Load(new ConfigurationManager

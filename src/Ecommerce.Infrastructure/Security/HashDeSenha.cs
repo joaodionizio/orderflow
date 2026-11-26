@@ -15,6 +15,9 @@ public static class HashDeSenha
     private const int TamanhoMinimoRegistro = 6 + 2 + TamanhoSaltBase64 + TamanhoHashBase64;
     private const int TamanhoMaximoRegistro = TamanhoMinimoRegistro + 1;
 
+    // Vetor público preparado para manter o custo do login na ausência de um hash utilizável.
+    internal const string RegistroDeReferencia = "600000.NnEdR5h2EMOZRwZNQKlc4A==.a8SqVh6na5fz+z9y4xw+fXs+e08hPW/8CWhvlcLMPyw=";
+
     public static string Gerar(string senha)
     {
         Span<byte> salt = stackalloc byte[TamanhoSalt];
@@ -26,8 +29,22 @@ public static class HashDeSenha
             $"{IteracoesAtuais}.{Convert.ToBase64String(salt)}.{Convert.ToBase64String(hash)}");
     }
 
-    public static ResultadoHashDeSenha Verificar(string senha, string? registro)
+    public static ResultadoHashDeSenha Verificar(string senha, string? registro) =>
+        Verificar(senha, registro, completarCustoDeFalha: false, out _);
+
+    internal static ResultadoHashDeSenha VerificarParaLogin(string senha, string? registro, out int iteracoesExecutadas)
     {
+        var resultado = Verificar(senha, registro, completarCustoDeFalha: true, out iteracoesExecutadas);
+        if (resultado == ResultadoHashDeSenha.RegistroInvalido)
+            Verificar(senha, RegistroDeReferencia, completarCustoDeFalha: false, out iteracoesExecutadas);
+
+        return resultado;
+    }
+
+    private static ResultadoHashDeSenha Verificar(string senha, string? registro, bool completarCustoDeFalha,
+        out int iteracoesExecutadas)
+    {
+        iteracoesExecutadas = 0;
         if (registro is null || registro.Length is < TamanhoMinimoRegistro or > TamanhoMaximoRegistro)
             return ResultadoHashDeSenha.RegistroInvalido;
 
@@ -50,8 +67,18 @@ public static class HashDeSenha
 
         Span<byte> informado = stackalloc byte[TamanhoHash];
         Rfc2898DeriveBytes.Pbkdf2(senha, salt, informado, iteracoes, HashAlgorithmName.SHA256);
+        iteracoesExecutadas = iteracoes;
         if (!CryptographicOperations.FixedTimeEquals(informado, esperado))
+        {
+            if (completarCustoDeFalha && iteracoes < IteracoesAtuais)
+            {
+                var iteracoesRestantes = IteracoesAtuais - iteracoes;
+                Rfc2898DeriveBytes.Pbkdf2(senha, salt, informado, iteracoesRestantes, HashAlgorithmName.SHA256);
+                iteracoesExecutadas += iteracoesRestantes;
+            }
+
             return ResultadoHashDeSenha.SenhaIncorreta;
+        }
 
         return iteracoes < IteracoesAtuais ? ResultadoHashDeSenha.AtualizacaoNecessaria : ResultadoHashDeSenha.Valido;
     }

@@ -101,6 +101,20 @@ Regras implementadas:
 
 O cadastro recebe `nome`, `email` e `senha`. O servidor provisiona sempre um `Operator` e rejeita campos extras, incluindo `role` e `perfil`. O login retorna o token JWT em `token` e a validade em `expiraEm`. Use `Authorization: Bearer <token>` nas rotas protegidas. No Swagger em desenvolvimento, use **Authorize** para informar o JWT e consulte os perfis exigidos por operação. Tokens ausentes ou inválidos recebem `401` nas rotas protegidas. Um token válido sem o perfil exigido recebe `403`.
 
+| Rota | Resposta | Condição |
+| --- | --- | --- |
+| `POST /api/v1/auth/login` | `200 OK` | Credenciais válidas. |
+| Login e cadastro | `400 Bad Request` | Corpo ou campos inválidos, com os detalhes de validação. |
+| `POST /api/v1/auth/login` | `401 Unauthorized` | E-mail inexistente, senha incorreta ou hash inválido. O corpo é `{"mensagem":"E-mail ou senha inválidos."}`. |
+| `POST /api/v1/auth/registrar` | `204 No Content` | Operador criado por um administrador. |
+| `POST /api/v1/auth/registrar` | `409 Conflict` | E-mail normalizado já cadastrado, inclusive quando duas solicitações concorrem. Substitui o `400` anterior para duplicidade. O corpo é `{"mensagem":"Já existe um usuário cadastrado com este e-mail."}`. |
+
+O `401` do login inclui `WWW-Authenticate: OrderFlowLogin`, um desafio de esquema particular da API e não padronizado. O cliente trata o `401` e envia `email` e `senha` válidos no corpo JSON do `POST /api/v1/auth/login`. O Swagger documenta o desafio como cabeçalho de resposta e executa o login com o corpo JSON. Clientes HTTP genéricos podem ignorar esquemas desconhecidos ou falhar ao interpretar o desafio. Integrações devem tratar o status e o corpo, sem depender da autenticação automática do cliente. As respostas de login e cadastro incluem `Cache-Control: no-store`. [RFC 9110, §§ 11.3 e 11.6.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-11.6.1) · [Registro de esquemas HTTP da IANA](https://www.iana.org/assignments/http-authschemes/)
+
+O cadastro remove espaços das extremidades do e-mail e o converte para minúsculas. O SQL Server mantém o bloqueio da chave ou do intervalo em `IX_Usuarios_Email` entre a consulta e a inclusão, dentro da mesma transação. O cadastro retorna `409` quando essa consulta encontra o e-mail. O índice permanece único. O resultado independe do idioma da sessão e falhas SQL seguem o tratamento de erro interno. Isso inclui `2601`, que pode vir de outro índice único, e `2627`, que corresponde a uma restrição como `PRIMARY KEY` ou `UNIQUE`. Uma inclusão que falha desvincula apenas o usuário da tentativa do `ChangeTracker`. [Bloqueios no SQL Server](https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-transaction-locking-and-row-versioning-guide) · [Códigos de erro do SQL Server](https://learn.microsoft.com/en-us/sql/relational-databases/errors-events/database-engine-events-and-errors-2000-to-2999)
+
+Os logs HTTP registram conflitos e falhas inesperadas de autenticação por operação e ID de rastreio. Falhas de persistência, inclusive em outras rotas, incluem o tipo da exceção, a causa e o código SQL quando disponível. A configuração do EF Core omite seis eventos cujas exceções podem conter dados rejeitados em mensagens do servidor. As categorias de log continuam disponíveis. [Logging do EF Core](https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/extensions-logging)
+
 ### Segurança dos tokens JWT
 
 | Configuração | Requisito |
@@ -129,6 +143,8 @@ O bloqueio local compara a senha inteira, ignorando maiúsculas e minúsculas ne
 O login aceita senhas legadas abaixo de 15 e acima de 128 caracteres, até o teto de 1.024 pontos de código. O fluxo anterior não tinha teto de comprimento e o hash armazenado não revela o comprimento original. Por isso, senhas legadas acima de 1.024 caracteres passam a ser recusadas e exigem tratamento administrativo antes de o usuário voltar a acessar a conta.
 
 O armazenamento continua no formato `iteracoes.salt.hash`, com PBKDF2-HMAC-SHA256, salt aleatório de 16 bytes e saída de 32 bytes. Novos hashes usam 600.000 iterações. A verificação aceita de 100.000 a 1.200.000 iterações e valida a estrutura, o Base64 e os tamanhos antes da derivação. A comparação dos bytes usa `FixedTimeEquals`. Registros inválidos resultam na mesma falha de autenticação de uma senha incorreta e geram um aviso sem identificadores de usuário, senhas ou hashes. [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#pbkdf2)
+
+O login executa uma verificação com um hash de referência pré-calculado de 600.000 iterações quando a conta está ausente ou o registro está inválido. O resultado dessa verificação é descartado. Uma senha incorreta em um hash legado executa uma segunda derivação com as iterações faltantes para atingir 600.000. A segunda chamada tem custo fixo de inicialização adicional. Essa mitigação reduz diferenças de tempo. Custos armazenados acima de 600.000 iterações, acesso ao banco e execução do processo ainda podem produzir sinais de enumeração.
 
 Após um login correto, hashes abaixo de 600.000 iterações são atualizados com um salt novo. A atualização modifica apenas `SenhaHash` e só grava se o hash anterior ainda corresponder exatamente ao lido. Quando outra operação vence a disputa, o login verifica a senha novamente com o registro atual. Hashes válidos com custo superior são preservados. A atualização dispensa migration e ocorre à medida que os usuários autenticam.
 
@@ -312,7 +328,7 @@ dotnet build Ecommerce.sln --configuration Release --no-restore
 dotnet test Ecommerce.sln --configuration Release --no-build
 ```
 
-Os testes unitários de serviços usam EF Core em memória. Para executar também os testes HTTP, de provisionamento, de migration e de atualização concorrente de hashes, forneça `ORDERFLOW_TEST_SQLSERVER` com uma string de conexão para uma **instância SQL Server isolada**, com permissão para criar e excluir bancos. A suíte gera nomes exclusivos `OrderFlowTests_<guid>` para seus bancos e os remove ao final. Sem essa variável, os testes de integração são ignorados localmente e falham no GitHub Actions.
+Os testes unitários de serviços usam EF Core em memória. Para executar também os testes HTTP, de provisionamento, de migration, de cadastro concorrente e de atualização concorrente de hashes, forneça `ORDERFLOW_TEST_SQLSERVER` com uma string de conexão para uma **instância SQL Server isolada**, com permissão para criar e excluir bancos. A suíte gera nomes exclusivos `OrderFlowTests_<guid>` para seus bancos e os remove ao final. Sem essa variável, os testes de integração são ignorados localmente e falham no GitHub Actions.
 
 ## Integração contínua
 

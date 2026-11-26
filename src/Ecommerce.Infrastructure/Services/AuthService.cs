@@ -1,4 +1,5 @@
 using System.Data;
+using System.Diagnostics.CodeAnalysis;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Ecommerce.Application.Dtos.Requests;
@@ -34,9 +35,46 @@ public class AuthService : IAuthService
     public async Task RegistrarAsync(RegistrarUsuarioRequest request)
     {
         var usuario = CriarUsuario(request, PerfilUsuario.Operator);
-        await GarantirEmailDisponivelAsync(usuario.Email);
-        _context.Usuarios.Add(usuario);
-        await _context.SaveChangesAsync();
+        try
+        {
+            if (_context.Database.IsSqlServer())
+            {
+                var strategy = _context.Database.CreateExecutionStrategy();
+                await strategy.ExecuteInTransactionAsync(
+                    async cancellationToken =>
+                    {
+                        // Mantém o bloqueio da chave (ou do intervalo) até confirmar a inserção.
+                        var emailEmUso = await _context.Database.SqlQuery<int>(
+                            $"""
+                            SELECT 1 AS [Value]
+                            FROM [dbo].[Usuarios] WITH (UPDLOCK, HOLDLOCK, INDEX([IX_Usuarios_Email]))
+                            WHERE [Email] = {usuario.Email}
+                            """).AnyAsync(cancellationToken);
+                        if (emailEmUso)
+                            throw new EmailDeUsuarioEmUsoException();
+
+                        _context.Usuarios.Add(usuario);
+                        await _context.SaveChangesAsync(acceptAllChangesOnSuccess: false, cancellationToken);
+                    },
+                    cancellationToken => _context.Usuarios.AnyAsync(u => u.Id == usuario.Id && u.Email == usuario.Email,
+                        cancellationToken),
+                    CancellationToken.None);
+                _context.ChangeTracker.AcceptAllChanges();
+            }
+            else
+            {
+                if (await EmailEmUsoAsync(usuario.Email))
+                    throw new EmailDeUsuarioEmUsoException();
+
+                _context.Usuarios.Add(usuario);
+                await _context.SaveChangesAsync();
+            }
+        }
+        catch
+        {
+            _context.Entry(usuario).State = EntityState.Detached;
+            throw;
+        }
     }
 
     public async Task ProvisionarPrimeiroAdminAsync(RegistrarUsuarioRequest request)
@@ -52,7 +90,9 @@ public class AuthService : IAuthService
                     if (await _context.Usuarios.AnyAsync(u => u.Perfil == PerfilUsuario.Admin, cancellationToken))
                         throw new RegraDeNegocioException("Já existe um administrador. O provisionamento inicial foi encerrado.");
 
-                    await GarantirEmailDisponivelAsync(usuario.Email, cancellationToken);
+                    if (await EmailEmUsoAsync(usuario.Email, cancellationToken))
+                        throw new RegraDeNegocioException(EmailDeUsuarioEmUsoException.MensagemPublica);
+
                     _context.Usuarios.Add(usuario);
                     await _context.SaveChangesAsync(acceptAllChangesOnSuccess: false, cancellationToken);
                 },
@@ -93,21 +133,19 @@ public class AuthService : IAuthService
         };
     }
 
-    private async Task GarantirEmailDisponivelAsync(string email, CancellationToken cancellationToken = default)
-    {
-        if (await _context.Usuarios.AnyAsync(usuario => usuario.Email == email, cancellationToken))
-            throw new RegraDeNegocioException("Já existe um usuário cadastrado com este e-mail.");
-    }
+    private Task<bool> EmailEmUsoAsync(string email, CancellationToken cancellationToken = default) =>
+        _context.Usuarios.AnyAsync(usuario => usuario.Email == email, cancellationToken);
 
     public async Task<LoginResponse> LoginAsync(LoginRequest request)
     {
-        if (PoliticaDeSenhas.ValidarLogin(request.Senha) is not null)
-            throw CredenciaisInvalidas();
+        var erroSenha = PoliticaDeSenhas.ValidarLogin(request.Senha);
+        if (erroSenha is not null)
+            throw new RegraDeNegocioException(erroSenha);
 
         var email = request.Email.Trim().ToLowerInvariant();
         var usuario = await _context.Usuarios
             .AsNoTracking()
-            .FirstOrDefaultAsync(usuario => usuario.Email == email) ?? throw CredenciaisInvalidas();
+            .FirstOrDefaultAsync(usuario => usuario.Email == email);
 
         if (VerificarCredencial(request.Senha, usuario) == ResultadoHashDeSenha.AtualizacaoNecessaria)
         {
@@ -125,7 +163,7 @@ public class AuthService : IAuthService
             if (afetados == 0)
             {
                 usuario = await _context.Usuarios.AsNoTracking()
-                    .FirstOrDefaultAsync(u => u.Id == id && u.Email == email) ?? throw CredenciaisInvalidas();
+                    .FirstOrDefaultAsync(u => u.Id == id && u.Email == email);
                 VerificarCredencial(request.Senha, usuario);
             }
         }
@@ -133,19 +171,17 @@ public class AuthService : IAuthService
         return GerarToken(usuario);
     }
 
-    private ResultadoHashDeSenha VerificarCredencial(string senha, Usuario usuario)
+    private ResultadoHashDeSenha VerificarCredencial(string senha, [NotNull] Usuario? usuario)
     {
-        var resultado = HashDeSenha.Verificar(senha, usuario.SenhaHash);
-        if (resultado == ResultadoHashDeSenha.RegistroInvalido)
+        var resultado = HashDeSenha.VerificarParaLogin(senha, usuario?.SenhaHash, out _);
+        if (usuario is not null && resultado == ResultadoHashDeSenha.RegistroInvalido)
             _logger.LogWarning("Registro de hash de senha inválido encontrado durante a autenticação.");
 
-        if (resultado is ResultadoHashDeSenha.RegistroInvalido or ResultadoHashDeSenha.SenhaIncorreta)
-            throw CredenciaisInvalidas();
+        if (usuario is null || resultado is ResultadoHashDeSenha.RegistroInvalido or ResultadoHashDeSenha.SenhaIncorreta)
+            throw new CredenciaisInvalidasException();
 
         return resultado;
     }
-
-    private static RegraDeNegocioException CredenciaisInvalidas() => new("E-mail ou senha inválidos.");
 
     private LoginResponse GerarToken(Usuario usuario)
     {

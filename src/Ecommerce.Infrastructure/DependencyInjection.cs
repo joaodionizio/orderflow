@@ -2,6 +2,7 @@ using Ecommerce.Application.Interfaces;
 using Ecommerce.Infrastructure.Data;
 using Ecommerce.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Ecommerce.Infrastructure;
@@ -13,7 +14,11 @@ public static class DependencyInjection
         services.AddDbContext<ApplicationDbContext>(options =>
             options.UseSqlServer(
                 connectionString,
-                sqlOptions => sqlOptions.EnableRetryOnFailure()));
+                sqlOptions => sqlOptions.EnableRetryOnFailure())
+            // Exceções do servidor podem conter valores mesmo sem logging de dados sensíveis.
+            .ConfigureWarnings(warnings => warnings.Ignore(
+                RelationalEventId.CommandError, RelationalEventId.ConnectionError, RelationalEventId.TransactionError,
+                CoreEventId.SaveChangesFailed, CoreEventId.QueryIterationFailed, CoreEventId.ExecutionStrategyRetrying)));
 
         services.AddScoped<ICompradorService, CompradorService>();
         services.AddScoped<IProdutoService, ProdutoService>();

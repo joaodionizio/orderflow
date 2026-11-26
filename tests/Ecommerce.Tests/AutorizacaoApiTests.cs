@@ -11,6 +11,7 @@ using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Domain.Entities;
 using Ecommerce.Domain.Enums;
 using Ecommerce.Infrastructure.Configuration;
+using Ecommerce.Infrastructure.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
@@ -36,6 +37,7 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
         using var response = await EnviarAsync(HttpMethod.Post, Cadastro, token: null, NovaConta());
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.True(response.Headers.CacheControl?.NoStore);
     }
 
     [SqlServerFact]
@@ -44,6 +46,7 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
         using var response = await EnviarAsync(HttpMethod.Post, Cadastro, fixture.OperatorToken, NovaConta());
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.True(response.Headers.CacheControl?.NoStore);
     }
 
     [SqlServerFact]
@@ -71,6 +74,21 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
         Assert.Equal("Operator", corpo.RootElement.GetProperty("role").GetString());
         Assert.True(corpo.RootElement.GetProperty("operador").GetBoolean());
         Assert.False(corpo.RootElement.GetProperty("claimMapeada").GetBoolean());
+    }
+
+    [SqlServerFact]
+    public async Task Cadastro_RecusaDuplicidadeSequencialComConflito()
+    {
+        var conta = NovaConta();
+        using var primeiro = await EnviarAsync(HttpMethod.Post, Cadastro, fixture.AdminToken, conta);
+        conta.Email = $"  {conta.Email.ToUpperInvariant()}  ";
+        using var duplicado = await EnviarAsync(HttpMethod.Post, Cadastro, fixture.AdminToken, conta);
+
+        Assert.Equal(HttpStatusCode.NoContent, primeiro.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, duplicado.StatusCode);
+        using var corpo = JsonDocument.Parse(await duplicado.Content.ReadAsStringAsync());
+        Assert.Equal("Já existe um usuário cadastrado com este e-mail.",
+            Assert.Single(corpo.RootElement.EnumerateObject()).Value.GetString());
     }
 
     [SqlServerFact]
@@ -137,7 +155,7 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
 
         using var semEspacos = await EnviarAsync(HttpMethod.Post, "/api/v1/auth/login", token: null,
             new LoginRequest { Email = conta.Email, Senha = conta.Senha.Trim() });
-        Assert.Equal(HttpStatusCode.BadRequest, semEspacos.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, semEspacos.StatusCode);
     }
 
     [SqlServerFact]
@@ -161,6 +179,7 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
             foreach (var resposta in new[] { respostaCadastro, respostaLogin })
             {
                 Assert.Equal(HttpStatusCode.BadRequest, resposta.StatusCode);
+                Assert.True(resposta.Headers.CacheControl?.NoStore);
                 Assert.DoesNotContain(senha, await resposta.Content.ReadAsStringAsync());
             }
         }
@@ -170,23 +189,46 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
     }
 
     [SqlServerFact]
-    public async Task Login_AplicaTetoERetornaFalhaGenericaParaHashCorrompido()
+    public async Task Login_RetornaMesmoDesafioParaCredenciaisInvalidasEMantemValidacao400()
     {
         var conta = NovaConta();
+        var contaCorrompida = NovaConta();
+        var contaLegada = NovaConta();
         await using var context = fixture.Database.CreateContext();
-        context.Usuarios.Add(new Usuario { Id = Guid.NewGuid(), Nome = conta.Nome, Email = conta.Email, SenhaHash = "invalido" });
+        context.Usuarios.AddRange(
+            new Usuario { Id = Guid.NewGuid(), Nome = conta.Nome, Email = conta.Email, SenhaHash = HashDeSenha.Gerar(conta.Senha) },
+            new Usuario { Id = Guid.NewGuid(), Nome = contaCorrompida.Nome, Email = contaCorrompida.Email, SenhaHash = "invalido" },
+            new Usuario { Id = Guid.NewGuid(), Nome = contaLegada.Nome, Email = contaLegada.Email,
+                SenhaHash = HashDeSenhaTests.GerarHashDeTeste(contaLegada.Senha, 100_000) });
         await context.SaveChangesAsync();
+        Assert.NotEmpty(await fixture.LoginAsync(conta));
 
-        using var corrompido = await EnviarAsync(HttpMethod.Post, "/api/v1/auth/login", token: null,
-            new LoginRequest { Email = conta.Email, Senha = conta.Senha });
-        Assert.Equal(HttpStatusCode.BadRequest, corrompido.StatusCode);
-        using var corpo = JsonDocument.Parse(await corrompido.Content.ReadAsStringAsync());
-        Assert.Equal("E-mail ou senha inválidos.", corpo.RootElement.GetProperty("mensagem").GetString());
-        Assert.False(corpo.RootElement.TryGetProperty("token", out _));
+        var falhas = new[]
+        {
+            new LoginRequest { Email = conta.Email, Senha = conta.Senha + "x" },
+            new LoginRequest { Email = contaLegada.Email, Senha = contaLegada.Senha + "x" },
+            new LoginRequest { Email = NovaConta().Email, Senha = HashDeSenhaTests.EntradaDoVetorDeReferencia },
+            new LoginRequest { Email = contaCorrompida.Email, Senha = HashDeSenhaTests.EntradaDoVetorDeReferencia }
+        };
+        foreach (var credenciais in falhas)
+        {
+            using var resposta = await EnviarAsync(HttpMethod.Post, "/api/v1/auth/login", token: null, credenciais);
+            Assert.Equal(HttpStatusCode.Unauthorized, resposta.StatusCode);
+            var desafio = Assert.Single(resposta.Headers.WwwAuthenticate);
+            Assert.Equal("OrderFlowLogin", desafio.Scheme);
+            Assert.Null(desafio.Parameter);
+            Assert.True(resposta.Headers.CacheControl?.NoStore);
+            using var corpo = JsonDocument.Parse(await resposta.Content.ReadAsStringAsync());
+            var propriedade = Assert.Single(corpo.RootElement.EnumerateObject());
+            Assert.Equal("mensagem", propriedade.Name);
+            Assert.Equal("E-mail ou senha inválidos.", propriedade.Value.GetString());
+        }
 
         using var extensa = await EnviarAsync(HttpMethod.Post, "/api/v1/auth/login", token: null,
             new LoginRequest { Email = conta.Email, Senha = PoliticaDeSenhasTests.Frase(1025) });
         Assert.Equal(HttpStatusCode.BadRequest, extensa.StatusCode);
+        Assert.True(extensa.Headers.CacheControl?.NoStore);
+        Assert.Empty(extensa.Headers.WwwAuthenticate);
         Assert.Contains("1024", await extensa.Content.ReadAsStringAsync());
     }
 
@@ -423,15 +465,29 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
         var paths = swagger.RootElement.GetProperty("paths");
         var login = paths.GetProperty("/api/v1/auth/login").GetProperty("post");
         Assert.False(login.TryGetProperty("security", out _));
+        var respostasLogin = login.GetProperty("responses");
+        Assert.True(respostasLogin.TryGetProperty("200", out _));
+        Assert.True(respostasLogin.TryGetProperty("400", out _));
+        var credenciaisInvalidas = respostasLogin.GetProperty("401");
+        Assert.Equal("E-mail ou senha inválidos.", credenciaisInvalidas.GetProperty("description").GetString());
+        Assert.Equal("OrderFlowLogin", EsquemaDoDesafio(credenciaisInvalidas));
+        Assert.Equal("application/json", Assert.Single(credenciaisInvalidas.GetProperty("content").EnumerateObject()).Name);
 
         var cadastro = paths.GetProperty(Cadastro).GetProperty("post");
         Assert.Equal("Perfil Admin obrigatório.", cadastro.GetProperty("description").GetString());
         Assert.True(cadastro.GetProperty("security")[0].TryGetProperty("Bearer", out _));
-        Assert.True(cadastro.GetProperty("responses").TryGetProperty("401", out _));
-        Assert.True(cadastro.GetProperty("responses").TryGetProperty("403", out _));
+        var respostasCadastro = cadastro.GetProperty("responses");
+        Assert.Equal("Bearer", EsquemaDoDesafio(respostasCadastro.GetProperty("401")));
+        Assert.True(respostasCadastro.TryGetProperty("400", out _));
+        Assert.True(respostasCadastro.TryGetProperty("403", out _));
+        var conflito = respostasCadastro.GetProperty("409");
+        Assert.Equal("application/json", Assert.Single(conflito.GetProperty("content").EnumerateObject()).Name);
 
         var pedidos = paths.GetProperty("/api/v1/pedidos").GetProperty("get");
         Assert.Equal("Perfil Admin ou Operator obrigatório.", pedidos.GetProperty("description").GetString());
+
+        static string? EsquemaDoDesafio(JsonElement resposta) => resposta
+            .GetProperty("headers").GetProperty("WWW-Authenticate").GetProperty("schema").GetProperty("enum")[0].GetString();
     }
 
     internal static RegistrarUsuarioRequest NovaConta() => new()
@@ -459,6 +515,8 @@ public sealed class AutorizacaoApiFixture : IAsyncLifetime
     internal HttpClient Client { get; private set; } = null!;
     internal string AdminToken { get; private set; } = null!;
     internal string OperatorToken { get; private set; } = null!;
+
+    internal WebApplicationFactory<Program> Api => _factory!;
 
     public async Task InitializeAsync()
     {

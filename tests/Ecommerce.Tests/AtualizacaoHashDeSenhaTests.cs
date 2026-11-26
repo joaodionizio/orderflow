@@ -25,7 +25,7 @@ public sealed class AtualizacaoHashDeSenhaTests
         var anterior = await GravarUsuarioAsync(context, conta, legado);
         var auth = database.CreateAuthService(context);
 
-        await Assert.ThrowsAsync<RegraDeNegocioException>(() => auth.LoginAsync(Credenciais(conta, conta.Senha + "x")));
+        await Assert.ThrowsAsync<CredenciaisInvalidasException>(() => auth.LoginAsync(Credenciais(conta, conta.Senha + "x")));
         Assert.Equal(legado, (await context.Usuarios.AsNoTracking().SingleAsync()).SenhaHash);
 
         var login = await auth.LoginAsync(Credenciais(conta));
@@ -64,6 +64,7 @@ public sealed class AtualizacaoHashDeSenhaTests
 
         Assert.NotEmpty((await auth.LoginAsync(Credenciais(conta))).Token);
         await Assert.ThrowsAsync<RegraDeNegocioException>(() => auth.LoginAsync(Credenciais(conta, conta.Senha + "x")));
+        await Assert.ThrowsAsync<CredenciaisInvalidasException>(() => auth.LoginAsync(Credenciais(conta, conta.Senha.Trim())));
         Assert.Equal(superior, (await context.Usuarios.AsNoTracking().SingleAsync()).SenhaHash);
     }
 
@@ -84,7 +85,7 @@ public sealed class AtualizacaoHashDeSenhaTests
         });
         await using var loginContext = database.CreateContext(interferencia);
 
-        var erro = await Assert.ThrowsAsync<RegraDeNegocioException>(
+        var erro = await Assert.ThrowsAsync<CredenciaisInvalidasException>(
             () => database.CreateAuthService(loginContext).LoginAsync(Credenciais(conta)));
 
         Assert.Equal("E-mail ou senha inválidos.", erro.Message);
