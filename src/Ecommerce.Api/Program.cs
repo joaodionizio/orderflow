@@ -25,6 +25,7 @@ if (provisionarAdmin && args.Length != 1)
 
 var builder = WebApplication.CreateBuilder(provisionarAdmin ? [] : args);
 
+var encaminhamento = provisionarAdmin ? null : TransporteHttp.Configurar(builder);
 var connectionString = SqlServerConfiguration.GetRequiredConnectionString(builder.Configuration);
 var jwt = JwtConfiguration.Load(builder.Configuration);
 
@@ -138,6 +139,7 @@ using (var scope = app.Services.CreateScope())
     dbContext.Database.Migrate();
 }
 
+app.UsarTransporteSeguro(encaminhamento);
 app.UseRouting();
 app.UseMiddleware<ExceptionMiddleware>();
 app.UseRateLimiter();
@@ -148,8 +150,6 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
-
-app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();

@@ -137,7 +137,7 @@ Os limites de frequência usam janelas fixas com relógio monotônico. Esse mode
 
 O roteamento identifica login e saúde. A API aplica os limites de concorrência primeiro, seguidos pela cota de login por origem e pela cota de frequência global ou de saúde. Essas verificações ocorrem antes do Bearer, da autorização e do model binding. Um login recusado pela cota de origem preserva o orçamento global. Operações e cadastro só consomem a cota individual após autorização, usando o GUID da claim `sub` validada. O MVC lê o JSON do login uma vez. Após a validação do DTO, a API aplica a cota por identificador antes de consultar o banco ou executar PBKDF2.
 
-A origem vem de `Connection.RemoteIpAddress`. IPv4 e sua forma mapeada em IPv6 compartilham a mesma cota. Clientes atrás do mesmo NAT ou proxy também podem compartilhar uma cota. Mantenha o encaminhamento automático de cabeçalhos desabilitado até configurar proxies confiáveis. Conexões cujo endereço é desconhecido compartilham uma cota própria.
+A origem vem de `Connection.RemoteIpAddress` após o encaminhamento de [proxies confiáveis](#https-proxies-e-hosts), quando habilitado. IPv4 e sua forma mapeada em IPv6 compartilham a mesma cota. Clientes atrás do mesmo NAT ou proxy também podem compartilhar uma cota. Conexões cujo endereço é desconhecido compartilham uma cota própria.
 
 O identificador de login segue a mesma normalização do serviço de autenticação, removendo espaços das extremidades e convertendo o e-mail para minúsculas. A partição guarda um HMAC-SHA256 calculado com uma chave aleatória independente por processo. Cada tabela guarda até 1.024 chaves por padrão e é limpa na renovação de sua janela. Quando a tabela enche, novas chaves recebem `429` até a renovação e as chaves registradas mantêm suas cotas restantes.
 
@@ -402,6 +402,7 @@ O Compose mantém `platform: linux/amd64` para a imagem do SQL Server 2022. No D
 
 ```bash
 dotnet restore Ecommerce.sln
+dotnet dev-certs https --trust
 (
   set -e
   sql_password="$(sed -n 's/^MSSQL_SA_PASSWORD=//p' .env)"
@@ -412,7 +413,7 @@ dotnet restore Ecommerce.sln
   Jwt__Chave="${Jwt__Chave:-$(openssl rand -hex 32)}"
   export Jwt__Chave
   export ConnectionStrings__DefaultConnection="Server=127.0.0.1,1433;Database=EcommerceDb;User ID=sa;Password=${sql_password};Encrypt=True;TrustServerCertificate=True"
-  dotnet run --project src/Ecommerce.Api --launch-profile http
+  dotnet run --project src/Ecommerce.Api --launch-profile https
 )
 ```
 
@@ -424,11 +425,48 @@ Ao conectar a API a outro SQL Server, forneça a string completa e a chave JWT n
 
 ### 3. Verificar a aplicação
 
-Abra o Swagger em <http://localhost:5115/swagger>. Em outro terminal, consulte o health check.
+Com o perfil `https`, abra o Swagger em <https://localhost:7018/swagger>. Em outro terminal, consulte o health check.
 
 ```bash
-curl --fail --show-error http://localhost:5115/health
+curl --fail --show-error https://localhost:7018/health
 ```
+
+### HTTPS, proxies e hosts
+
+Em `Development`, o perfil `https` escuta em `https://localhost:7018` e `http://localhost:5115`. Quando há uma porta HTTPS configurada ou detectada, o ASP.NET Core retorna `307` com `Cache-Control: no-store` para requisições HTTP. O perfil `http` mantém `http://localhost:5115` para verificações locais, como `GET /health`, sem redirecionamento quando só há um listener HTTP. Use o perfil `https` para login e requisições com tokens. Um redirecionamento pode preservar o método e o corpo, mas credenciais já enviadas por HTTP foram transmitidas sem TLS. O certificado de desenvolvimento fica restrito ao ambiente local. [HTTPS no ASP.NET Core](https://learn.microsoft.com/aspnet/core/security/enforcing-ssl?view=aspnetcore-8.0)
+
+Fora de `Development`, a API exige HTTPS e devolve `400` com corpo vazio e `Cache-Control: no-store` a requisições HTTP que chegam à aplicação. A aplicação rejeita a requisição antes de ler o corpo, validar o token ou debitar cotas. Credenciais que já chegaram por HTTP trafegaram em claro mesmo quando a API devolve `400`. Clientes e sondas devem acessar uma URL HTTPS desde a primeira requisição. Configure HTTPS no ponto de entrada e desabilite o listener HTTP externo ou rejeite HTTP no gateway.
+
+| Topologia | Configuração |
+| --- | --- |
+| Acesso direto ao Kestrel | Configure apenas o listener HTTPS do Kestrel e forneça um certificado confiável para o host pelo ambiente de implantação. Use `Kestrel__Endpoints__Https__Url` e `Kestrel__Endpoints__Https__Certificate__Path` para configurar um certificado montado. Forneça `Kestrel__Endpoints__Https__Certificate__Password` pelo gerenciador de segredos quando o arquivo exigir senha. Mantenha certificados de desenvolvimento fora do ambiente de produção e o encaminhamento desabilitado. |
+| Terminação TLS no gateway | O gateway recebe HTTPS, preserva o `Host` autorizado e sobrescreve `X-Forwarded-For` com o IP do cliente e `X-Forwarded-Proto` com o esquema que observou. Restrinja o listener do Kestrel aos proxies confiáveis por firewall ou rede privada. Use TLS também entre o gateway e o Kestrel quando a rede intermediária não oferecer proteção suficiente para tokens e corpos de requisição. |
+
+Passe `AllowedHosts` como configuração externa em `Production` e nos demais ambientes fora de `Development`. Use nomes ou IPs exatos separados por ponto e vírgula, sem portas, esquemas ou curingas. Escreva IPv6 entre colchetes e use a mesma representação textual enviada no `Host`. O filtro nativo compara o host sem distinguir maiúsculas e minúsculas e ignora a porta da requisição. Em `Development`, a lista padrão permite `localhost`, `127.0.0.1` e `[::1]`. A API encerra no startup se a lista estiver ausente ou inválida. Hosts ausentes ou não autorizados recebem `400` com corpo vazio. Cadastre no backend o `Host` que o gateway envia. O filtro verifica o destino HTTP e a autorização continua baseada no JWT e nas políticas de acesso. [Filtragem de hosts no Kestrel](https://learn.microsoft.com/aspnet/core/fundamentals/servers/kestrel/host-filtering?view=aspnetcore-8.0)
+
+Exemplo de variáveis externas. Substitua os valores de documentação pelo host autorizado e pelo endereço de conexão do gateway visto pelo Kestrel. Os exemplos de IP e CIDR são alternativas e podem ser combinados se ambos corresponderem a proxies autorizados.
+
+```dotenv
+AllowedHosts=orderflow.example.test
+TrustedProxies__Enabled=true
+TrustedProxies__Addresses__0=192.0.2.10
+TrustedProxies__Networks__0=2001:db8:1::/64
+```
+
+`TrustedProxies` fica desabilitado por padrão. Ao habilitá-lo, forneça pelo menos um IP específico ou uma rede CIDR dedicada aos proxies. A aplicação valida a lista no startup e rejeita prefixos zero e redes IPv6 que abranjam todo o espaço IPv4 mapeado. IPv4, IPv6 e IPv4 mapeado em IPv6 são aceitos. As redes configuradas são cumulativas. Uma rede abrangente só é apropriada se todo o intervalo estiver reservado a proxies administrados e isolado de clientes e outras cargas. Prefira IPs individuais se o segmento for compartilhado.
+
+O middleware nativo verifica o IP da conexão e consome no máximo um salto. A API só considera um par com um valor em cada cabeçalho, `X-Forwarded-For` com o endereço e `X-Forwarded-Proto` com `http` ou `https`. Pares incompletos, malformados ou com múltiplos valores são ignorados. O gateway deve sobrescrever os cabeçalhos do cliente. `X-Forwarded-Host` não é processado. A ativação de `ASPNETCORE_FORWARDEDHEADERS_ENABLED` no startup é incompatível com a política explícita. Reinicie a API ao mudar a lista de hosts ou proxies. [Proxies no ASP.NET Core](https://learn.microsoft.com/aspnet/core/host-and-deploy/proxy-load-balancer?view=aspnetcore-8.0) · [Validação de proxies no .NET 8](https://learn.microsoft.com/aspnet/core/breaking-changes/8/forwarded-headers-unknown-proxies)
+
+A cota de login usa o `RemoteIpAddress` depois do encaminhamento confiável. Em acesso direto, usa o IP da conexão e ignora os cabeçalhos encaminhados. Atrás do proxy, um IP de origem ausente ou um par de cabeçalhos mal configurado pode fazer vários clientes compartilharem a cota do gateway ou levar à rejeição da requisição HTTP se o gateway terminou TLS. Um proxy confiável pode afirmar IP e esquema, por isso o firewall deve impedir o acesso direto indevido ao backend e a rede autorizada deve conter somente proxies administrados. Passe a string do SQL Server, a chave JWT e qualquer senha de certificado pelo gerenciador de segredos ou pelo ambiente protegido do serviço, sem versionar valores nem registrá-los nos logs.
+
+#### Cabeçalhos e ordem do pipeline
+
+- `Strict-Transport-Security: max-age=2592000` orienta clientes compatíveis a voltar por HTTPS durante 30 dias. É emitido em HTTPS fora de `Development`, inclusive após terminação TLS confiável, com as exclusões locais padrão do ASP.NET Core. A política vale só para o host recebido, sem `includeSubDomains` ou `preload`.
+- `X-Content-Type-Options: nosniff` impede que navegadores tentem adivinhar o tipo do conteúdo. `Referrer-Policy: no-referrer` evita o envio da URL como referência. `X-Frame-Options: DENY` protege respostas HTML, incluindo o Swagger, contra enquadramento.
+- O Kestrel omite o cabeçalho `Server`. Os fluxos de autenticação e as respostas sensíveis mantêm `Cache-Control: no-store` conforme o contrato. Erros gerados antes do pipeline pelo Kestrel ou pelo gateway podem ter cabeçalhos e corpos diferentes. O gateway é responsável pelos cabeçalhos nas respostas que ele próprio gera e pelos que adiciona ao encaminhar a resposta da aplicação.
+- CORS segue desabilitado. Uma política de origens, métodos e cabeçalhos poderá ser definida quando um frontend corporativo precisar acessar a API a partir de outra origem.
+
+O registro dos cabeçalhos de resposta ocorre primeiro para cobrir inclusive rejeições do filtro de hosts. O filtro valida o `Host` recebido antes do encaminhamento confiável de IP e esquema. HTTPS e HSTS vêm antes do roteamento. Após selecionar a rota, o tratamento de exceções e `no-store` da autenticação envolvem as cotas de concorrência e frequência. O Swagger de desenvolvimento é atendido nessa posição. Para os demais endpoints, autenticação e autorização precedem a cota por usuário, os limites de corpo e a execução do endpoint. Assim, uma rejeição de transporte ou de host não consome cotas e a cota de login usa a origem determinada pelo middleware de encaminhamento.
 
 ### Rotação de credenciais anteriormente versionadas
 

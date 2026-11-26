@@ -32,12 +32,24 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
     private static readonly string[] RotasOperacionais = ["/api/v1/compradores", "/api/v1/produtos", "/api/v1/pedidos"];
 
     [SqlServerFact]
+    public async Task Swagger_EmDevelopmentProtegeHtmlContraEnquadramento()
+    {
+        using var response = await fixture.Client.GetAsync("/swagger/index.html");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
+        TransporteHttpTests.VerificarCabecalhos(response, html: true);
+        Assert.False(response.Headers.Contains("Content-Security-Policy"));
+    }
+
+    [SqlServerFact]
     public async Task Anonimo_NaoPodeCadastrarContas()
     {
         using var response = await EnviarAsync(HttpMethod.Post, Cadastro, token: null, NovaConta());
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.True(response.Headers.CacheControl?.NoStore);
+        TransporteHttpTests.VerificarCabecalhos(response);
     }
 
     [SqlServerFact]
@@ -47,6 +59,7 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.True(response.Headers.CacheControl?.NoStore);
+        TransporteHttpTests.VerificarCabecalhos(response);
     }
 
     [SqlServerFact]
@@ -56,6 +69,7 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
         using var response = await EnviarAsync(HttpMethod.Post, Cadastro, fixture.AdminToken, novo);
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        TransporteHttpTests.VerificarCabecalhos(response);
         await using var context = fixture.Database.CreateContext();
         var usuario = await context.Usuarios.SingleAsync(usuario => usuario.Email == novo.Email);
         Assert.Equal(PerfilUsuario.Operator, usuario.Perfil);
@@ -86,6 +100,8 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
 
         Assert.Equal(HttpStatusCode.NoContent, primeiro.StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, duplicado.StatusCode);
+        Assert.True(duplicado.Headers.CacheControl?.NoStore);
+        TransporteHttpTests.VerificarCabecalhos(duplicado);
         using var corpo = JsonDocument.Parse(await duplicado.Content.ReadAsStringAsync());
         Assert.Equal("Já existe um usuário cadastrado com este e-mail.",
             Assert.Single(corpo.RootElement.EnumerateObject()).Value.GetString());
@@ -111,6 +127,8 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
                 });
 
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.True(response.Headers.CacheControl?.NoStore);
+            TransporteHttpTests.VerificarCabecalhos(response);
             Assert.False(await context.Usuarios.AnyAsync(usuario => usuario.Email == novo.Email));
         }
     }

@@ -13,6 +13,7 @@ using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Interfaces;
 using Ecommerce.Infrastructure.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -35,6 +36,73 @@ public class LimitesHttpTests(AutorizacaoApiFixture fixture) : IClassFixture<Aut
     private const string Saude = "/health";
     private const string Origem = "192.0.2.10";
     private const string OutraOrigem = "192.0.2.20";
+
+    [SqlServerFact]
+    public async Task Login_UsaOrigemEncaminhadaSomenteDoProxyConfiavel()
+    {
+        const string host = "orderflow.example.test";
+        const string proxy = "::ffff:192.0.2.5";
+        const string clienteEncaminhado = "198.51.100.10";
+        var monitor = new MonitorDeAutenticacao();
+        var chamadasJwt = 0;
+        using var raiz = new ApiComLimites(new Dictionary<string, string?>(fixture.Database.Configuration)
+        {
+            ["AllowedHosts"] = host,
+            ["TrustedProxies:Enabled"] = "true",
+            ["TrustedProxies:Addresses:0"] = "192.0.2.5",
+            ["RateLimiting:LoginPorOrigem"] = "1"
+        }, new RelogioDeTeste(), monitor);
+        using var api = raiz.WithWebHostBuilder(builder => builder.UseEnvironment(Environments.Production)
+            .ConfigureServices(services => services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme,
+                options => options.Events.OnMessageReceived = _ =>
+                {
+                    Interlocked.Increment(ref chamadasJwt);
+                    return Task.CompletedTask;
+                })));
+        using var client = api.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+
+        await VerificarAsync("http", Origem, OutraOrigem, "https", HttpStatusCode.BadRequest, hsts: false);
+        await VerificarAsync("http", proxy, null, "https", HttpStatusCode.BadRequest, hsts: false);
+        await VerificarAsync("http", proxy, clienteEncaminhado, "http", HttpStatusCode.BadRequest, hsts: false);
+        await VerificarAsync("http", proxy, $"203.0.113.20, {clienteEncaminhado}", "http, https",
+            HttpStatusCode.BadRequest, hsts: false);
+        await VerificarAsync("http", proxy, clienteEncaminhado, "https", HttpStatusCode.BadRequest, hsts: false,
+            hostEnviado: "outro.example.test");
+        Assert.Equal(0, chamadasJwt);
+        Assert.Equal(0, monitor.Logins);
+
+        await VerificarAsync("https", Origem, OutraOrigem, "http", HttpStatusCode.Unauthorized);
+        await VerificarAsync("https", Origem, "203.0.113.20", "http", HttpStatusCode.TooManyRequests);
+        await VerificarAsync("http", proxy, clienteEncaminhado, "https", HttpStatusCode.Unauthorized);
+        await VerificarAsync("http", proxy, $"::ffff:{clienteEncaminhado}", "HTTPS", HttpStatusCode.TooManyRequests);
+        await VerificarAsync("http", proxy, "198.51.100.11", "https", HttpStatusCode.Unauthorized);
+        Assert.Equal(3, chamadasJwt);
+        Assert.Equal(3, monitor.Logins);
+
+        async Task VerificarAsync(string esquema, string direto, string? encaminhado, string proto,
+            HttpStatusCode esperado, bool hsts = true, string hostEnviado = host)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{esquema}://{hostEnviado}{Login}")
+            {
+                Content = JsonContent.Create(NovoLogin())
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "sentinela-de-transporte");
+            request.Headers.Add("X-Test-Remote-Ip", direto);
+            request.Headers.Add("X-Forwarded-Proto", proto);
+            request.Headers.Add("X-Forwarded-Host", host);
+            if (encaminhado is not null)
+                request.Headers.Add("X-Forwarded-For", encaminhado);
+
+            using var response = await client.SendAsync(request);
+            Assert.Equal(esperado, response.StatusCode);
+            Assert.Null(response.Headers.Location);
+            TransporteHttpTests.VerificarCabecalhos(response, hsts);
+            if (hostEnviado == host)
+                Assert.True(response.Headers.CacheControl?.NoStore);
+            if (esperado == HttpStatusCode.TooManyRequests)
+                await VerificarRejeicaoAsync(response, segundos: 60);
+        }
+    }
 
     [SqlServerFact]
     public async Task Login_IsolaOrigemIgnoraCabecalhosERecusaAntesDoJson()

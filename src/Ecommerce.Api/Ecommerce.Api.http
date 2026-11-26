@@ -1,4 +1,4 @@
-@host = http://localhost:5115
+@host = https://localhost:7018
 @token = <token JWT>
 
 ### Health check

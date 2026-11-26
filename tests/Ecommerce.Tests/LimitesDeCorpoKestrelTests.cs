@@ -88,8 +88,8 @@ public class LimitesDeCorpoKestrelTests(AutorizacaoApiFixture fixture) : IClassF
         info.ArgumentList.Add(typeof(Program).Assembly.Location);
         foreach (var (chave, valor) in fixture.Database.Configuration)
             info.Environment[chave.Replace(":", "__", StringComparison.Ordinal)] = valor;
-        info.Environment["DOTNET_ENVIRONMENT"] = "Production";
-        info.Environment["ASPNETCORE_ENVIRONMENT"] = "Production";
+        info.Environment["DOTNET_ENVIRONMENT"] = "Development";
+        info.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
         info.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
         info.Environment["Logging__LogLevel__Microsoft.Hosting.Lifetime"] = "Information";
         return info;
@@ -131,6 +131,7 @@ public class LimitesDeCorpoKestrelTests(AutorizacaoApiFixture fixture) : IClassF
         using var response = await EnviarAsync();
         Assert.True(response.StatusCode == esperado,
             $"Esperado {(int)esperado}, obtido {(int)response.StatusCode} para {rota} com {bytesObservados} bytes observados (em blocos: {emBlocos}).");
+        TransporteHttpTests.VerificarCabecalhos(response);
         if (esperado == HttpStatusCode.RequestEntityTooLarge)
         {
             if (!emBlocos)
