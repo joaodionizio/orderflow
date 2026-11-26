@@ -1,9 +1,11 @@
 using Ecommerce.Api.Authorization;
 using Ecommerce.Api.Controllers;
+using Ecommerce.Api.Middlewares;
 using Ecommerce.Api.Responses;
 using Ecommerce.Application.Exceptions;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.OpenApi.Any;
 using Microsoft.OpenApi.Models;
@@ -16,6 +18,7 @@ internal sealed class AutorizacaoOperationFilter : IOperationFilter
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
         DocumentarLimites(operation, context);
+        DocumentarCorpo(operation, context);
         DocumentarProtecao(operation, context);
 
         if (context.ApiDescription.ActionDescriptor is not ControllerActionDescriptor acao
@@ -41,6 +44,30 @@ internal sealed class AutorizacaoOperationFilter : IOperationFilter
                 Required = true,
                 Schema = new OpenApiSchema { Type = "string", Enum = [new OpenApiString("no-store")] }
             };
+        }
+    }
+
+    private static void DocumentarCorpo(OpenApiOperation operation, OperationFilterContext context)
+    {
+        var limite = context.ApiDescription.ActionDescriptor.EndpointMetadata.OfType<IRequestSizeLimitMetadata>()
+            .LastOrDefault()?.MaxRequestBodySize ?? LimitesDeCorpo.Padrao;
+        operation.Responses["413"] = new OpenApiResponse
+        {
+            Description = $"O corpo excede o limite de {limite} bytes. O servidor ou um proxy também pode responder diretamente.",
+            Content =
+            {
+                ["application/json"] = new OpenApiMediaType
+                {
+                    Schema = context.SchemaGenerator.GenerateSchema(typeof(MensagemDeErroResponse), context.SchemaRepository)
+                }
+            }
+        };
+
+        if (operation.RequestBody is not null)
+        {
+            operation.RequestBody.Description = $"Limite de {limite} bytes e profundidade JSON de {LimitesDeCorpo.ProfundidadeJson} níveis.";
+            operation.Responses.TryAdd("400", new OpenApiResponse { Description = "Corpo JSON inválido ou fora das regras de validação." });
+            operation.Responses.TryAdd("415", new OpenApiResponse { Description = "Formato de conteúdo não suportado." });
         }
     }
 

@@ -145,6 +145,30 @@ Muitas origens distintas podem preencher a tabela de origens, e tentativas váli
 
 Respostas `429 Too Many Requests` incluem `Cache-Control: no-store` e o corpo genérico `{"mensagem":"Muitas requisições. Tente novamente mais tarde."}`. Se uma janela de frequência estiver esgotada, `Retry-After` informa os segundos até sua renovação, arredondados para cima. Rejeições por concorrência omitem o cabeçalho, pois dependem do término de outra chamada. As cotas são locais e reiniciam com o processo. Em múltiplas réplicas, use limites compartilhados no gateway se a política exigir uma cota única.
 
+### Tamanho do corpo e validação de entrada
+
+| Entrada | Limite ou regra |
+| --- | --- |
+| Corpo de requisição | 256 KiB (262.144 bytes) no Kestrel. |
+| Corpo de login | 16 KiB (16.384 bytes) em `POST /api/v1/auth/login`. |
+| JSON | Até 32 níveis de profundidade, incluindo a raiz. |
+| Nome de usuário, comprador ou produto | Obrigatório, com até 150 unidades UTF-16. |
+| E-mail de usuário ou comprador | Obrigatório, com até 200 unidades UTF-16, inclusive no login. O e-mail do comprador também exige um domínio com ponto. |
+| Preço de produto | De 0,01 a 9.999.999.999.999.999,99, conforme `decimal(18,2)` no SQL Server. O valor deve ser representável em centavos. Zeros adicionais após os centavos são aceitos. |
+| Criação e atualização de pedidos | De 1 a 100 itens. Cada item precisa de um GUID de produto diferente de zero e de uma quantidade inteira de 1 a 2.147.483.647. A criação também exige um GUID de comprador diferente de zero. Produtos repetidos continuam aceitos como linhas distintas. |
+| Total de pedido | A API rejeita antes da gravação totais que perderiam centavos ao serem representados pelo tipo `decimal` do contrato de resposta. |
+| Consulta de pedidos | A API retorna `400` se o deslocamento calculado pelos parâmetros de paginação existentes exceder o intervalo de um inteiro de 32 bits. |
+
+Preços e subtotais mantêm a precisão em centavos do SQL Server. Os valores monetários das respostas continuam como números JSON. Consumidores que usam ponto flutuante binário, como `Number` em JavaScript, podem perder centavos, especialmente em valores altos. Para cálculos financeiros, leia os dígitos do JSON diretamente com um tipo ou biblioteca decimal. Pedidos legados gravados antes desta validação podem ter totais fora da precisão do contrato de resposta. [RFC 8259, seção 6](https://www.rfc-editor.org/rfc/rfc8259#section-6)
+
+Os tetos de corpo são valores iniciais para desenvolvimento. O login usa menos de 14 KiB mesmo com os 1.024 caracteres Unicode da senha legada codificados como pares de escapes JSON e o e-mail no limite. Os demais contratos usam poucos campos ou até 100 itens, o que deixa margem abaixo de 256 KiB. Espaços sintáticos, escapes, codificação e dados extras contam no limite. Valide o tamanho dos payloads reais e teste carga antes de adotar esses valores em produção. Os tetos do aplicativo são constantes, e os limites de campos e coleções fazem parte do contrato.
+
+A aplicação rejeita um `Content-Length` excessivo antes de acessar os serviços, após as cotas e a autorização aplicáveis. O Kestrel também limita os bytes observados durante a leitura quando o cabeçalho está ausente. Em HTTP/1.1 com `Transfer-Encoding: chunked`, o Kestrel conta parte do enquadramento dos blocos, de modo que o espaço útil para JSON é um pouco menor. Nas rotas sem corpo declarado, a aplicação descarta o corpo de forma incremental antes de executar a ação. Em ações com JSON, o MVC desserializa o corpo uma vez. Em caso de erro `400` ou `415` sem tamanho declarado, a aplicação descarta o restante da mesma leitura sob o limite do Kestrel. Autorizações ou cotas podem rejeitar a requisição antes da leitura. Um proxy pode aplicar seu próprio teto ou formato de erro antes que a requisição chegue à aplicação. Configure o proxy e o servidor de hospedagem de acordo com o contrato do ambiente. [Limites do Kestrel](https://learn.microsoft.com/aspnet/core/fundamentals/servers/kestrel/options)
+
+Login e cadastro rejeitam propriedades JSON desconhecidas, inclusive tentativas de enviar o perfil no cadastro. Clientes de login que enviavam campos extras agora recebem `400` e devem enviar apenas `email` e `senha`. Os DTOs operacionais continuam aceitando propriedades adicionais. O `System.Text.Json` no .NET 8 compara os nomes das propriedades conhecidas sem distinguir maiúsculas de minúsculas. Quando a desserialização termina com sucesso, o valor da última ocorrência é o que passa pela validação e chega à cota por identificador e à autenticação. O login mede o e-mail recebido antes da normalização compartilhada entre autenticação e limitador. A senha mantém a política Unicode, os espaços e os limites descritos na seção de senhas. [Membros desconhecidos no System.Text.Json](https://learn.microsoft.com/dotnet/standard/serialization/system-text-json/missing-members)
+
+Pedidos com coleções estruturalmente inválidas são rejeitados antes de consultar o banco. O teto de itens também limita o número de consultas individuais de produto. Consultas com deslocamentos elevados, ainda dentro do intervalo de 32 bits, ficam registradas para análise de custo na etapa 1.3.3.
+
 ### Segurança dos tokens JWT
 
 | Configuração | Requisito |
@@ -236,8 +260,15 @@ A aplicação usa middleware global para padronizar falhas da API. Erros inesper
 
 | Situação | Status |
 | --- | ---: |
-| Entidade não encontrada | 404 |
+| Dados inválidos ou JSON malformado | 400 |
 | Regra de negócio inválida | 400 |
+| Credenciais de login inválidas ou token ausente ou inválido em rota protegida | 401 |
+| Token válido sem o perfil exigido | 403 |
+| Entidade não encontrada | 404 |
+| E-mail de usuário já cadastrado | 409 |
+| Corpo acima do limite | 413 |
+| Formato de conteúdo não suportado em uma ação que lê o corpo | 415 |
+| Limite de frequência ou concorrência atingido | 429 |
 | Erro inesperado | 500 |
 
 ## Health Check

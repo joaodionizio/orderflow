@@ -11,6 +11,7 @@ using Ecommerce.Infrastructure.Data;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 
@@ -27,26 +28,34 @@ var builder = WebApplication.CreateBuilder(provisionarAdmin ? [] : args);
 var connectionString = SqlServerConfiguration.GetRequiredConnectionString(builder.Configuration);
 var jwt = JwtConfiguration.Load(builder.Configuration);
 
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = LimitesDeCorpo.Padrao);
+// Em .NET 8 o formatador pode registrar mensagens JSON com entrada do cliente em nível Debug.
+builder.Logging.AddFilter(typeof(SystemTextJsonInputFormatter).FullName, LogLevel.None);
 builder.Services.AddSingleton(jwt);
 builder.Services.AdicionarLimitesHttp(OpcoesDeLimites.Carregar(builder.Configuration));
 builder.Services.AddControllers(options =>
 {
+    options.Filters.Add<LimitesDeCorpo>();
     var mensagens = options.ModelBindingMessageProvider;
 
-    mensagens.SetAttemptedValueIsInvalidAccessor((valor, campo) =>
-        $"O valor '{valor}' não é válido para o campo {campo}.");
+    mensagens.SetAttemptedValueIsInvalidAccessor((_, campo) =>
+        $"O valor informado para o campo {campo} não é válido.");
     mensagens.SetMissingBindRequiredValueAccessor(campo =>
         $"O campo {campo} é obrigatório.");
     mensagens.SetMissingKeyOrValueAccessor(() =>
         "Valor obrigatório não informado.");
     mensagens.SetUnknownValueIsInvalidAccessor(campo =>
         $"O valor informado para o campo {campo} não é válido.");
-    mensagens.SetValueIsInvalidAccessor(valor =>
-        $"O valor '{valor}' não é válido.");
+    mensagens.SetValueIsInvalidAccessor(_ =>
+        "O valor informado não é válido.");
     mensagens.SetValueMustBeANumberAccessor(campo =>
         $"O campo {campo} deve ser um número.");
     mensagens.SetValueMustNotBeNullAccessor(_ =>
         "O campo é obrigatório.");
+}).AddJsonOptions(options =>
+{
+    options.JsonSerializerOptions.MaxDepth = LimitesDeCorpo.ProfundidadeJson;
+    options.AllowInputFormatterExceptionMessages = false;
 });
 builder.Services.Configure<ApiBehaviorOptions>(options =>
 {
@@ -59,6 +68,15 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
             Type = "https://tools.ietf.org/html/rfc9110#section-15.5.1",
             Instance = context.HttpContext.Request.Path
         };
+
+        // O caminho de uma falha JSON pode conter um nome de propriedade enviado pelo cliente.
+        var caminhosJson = detalhes.Errors.Keys.Where(chave => chave.StartsWith('$')).ToArray();
+        if (caminhosJson.Length > 0)
+        {
+            foreach (var caminho in caminhosJson)
+                detalhes.Errors.Remove(caminho);
+            detalhes.Errors["$"] = ["O corpo JSON é inválido."];
+        }
 
         detalhes.Extensions["traceId"] = context.HttpContext.TraceIdentifier;
 
@@ -98,6 +116,7 @@ builder.Services.AddSwaggerGen(options =>
     });
 
     options.OperationFilter<AutorizacaoOperationFilter>();
+    options.SchemaFilter<ValidacaoDeEntradaSchemaFilter>();
 });
 builder.Services
     .AddHealthChecks()
@@ -134,6 +153,7 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 app.Use(LimitesHttp.LimitarUsuarioAsync);
+app.Use(LimitesDeCorpo.VerificarAsync);
 
 app.MapControllers();
 app.MapHealthChecks("/health", new HealthCheckOptions

@@ -24,10 +24,8 @@ public class ProdutoService : IProdutoService
             throw new RegraDeNegocioException("O nome do produto é obrigatório.");
         }
 
-        if (request.Preco <= 0)
-        {
-            throw new RegraDeNegocioException("O preço do produto deve ser maior que zero.");
-        }
+        if (CriarProdutoRequest.ValidarPreco(request.Preco) is { } erroPreco)
+            throw new RegraDeNegocioException(erroPreco);
 
         var produto = new Produto
         {

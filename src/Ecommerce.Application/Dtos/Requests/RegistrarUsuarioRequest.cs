@@ -13,7 +13,7 @@ public class RegistrarUsuarioRequest
 
     [Required(ErrorMessage = "O e-mail do usuário é obrigatório.")]
     [EmailAddress(ErrorMessage = "O e-mail do usuário deve possuir um formato válido.")]
-    [MaxLength(200, ErrorMessage = "O e-mail do usuário deve possuir no máximo 200 caracteres.")]
+    [MaxLength(EmailDeUsuario.ComprimentoMaximo, ErrorMessage = "O e-mail do usuário deve possuir no máximo {1} caracteres.")]
     public string Email { get; set; } = string.Empty;
 
     [Required(AllowEmptyStrings = true, ErrorMessage = "A senha é obrigatória.")]

@@ -57,6 +57,13 @@ public class ExceptionMiddleware
                 StatusCodes.Status400BadRequest,
                 ex.Message);
         }
+        catch (BadHttpRequestException ex) when (!context.Response.HasStarted)
+        {
+            if (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+                await LimitesDeCorpo.ResponderExcessoAsync(context);
+            else
+                await EscreverRespostaAsync(context, ex.StatusCode, "A requisição HTTP é inválida.");
+        }
         catch (Exception ex)
         {
             var causa = ex.GetBaseException();

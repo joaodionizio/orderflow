@@ -118,6 +118,9 @@ public class AuthService : IAuthService
         if (string.IsNullOrWhiteSpace(request.Email))
             throw new RegraDeNegocioException("O e-mail do usuário é obrigatório.");
 
+        if (request.Email.Length > EmailDeUsuario.ComprimentoMaximo)
+            throw new RegraDeNegocioException("Informe um e-mail dentro do comprimento permitido.");
+
         var erroSenha = PoliticaDeSenhas.ValidarNova(request.Senha);
         if (erroSenha is not null)
             throw new RegraDeNegocioException(erroSenha);
@@ -138,6 +141,9 @@ public class AuthService : IAuthService
 
     public async Task<LoginResponse> LoginAsync(LoginRequest request)
     {
+        if (string.IsNullOrWhiteSpace(request.Email) || request.Email.Length > EmailDeUsuario.ComprimentoMaximo)
+            throw new RegraDeNegocioException("Informe um e-mail dentro do comprimento permitido.");
+
         var erroSenha = PoliticaDeSenhas.ValidarLogin(request.Senha);
         if (erroSenha is not null)
             throw new RegraDeNegocioException(erroSenha);

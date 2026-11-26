@@ -30,6 +30,7 @@ public class PedidosController : ControllerBase
     }
 
     [HttpGet]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Listar([FromQuery] PedidoFiltroRequest filtro)
     {
         var pedidos = await _pedidoService.ListarAsync(filtro);

@@ -23,8 +23,7 @@ public class PedidoService : IPedidoService
         if (request.CompradorId == Guid.Empty)
             throw new RegraDeNegocioException("O comprador é obrigatório.");
 
-        if (request.Itens is null || !request.Itens.Any())
-            throw new RegraDeNegocioException("O pedido deve possuir pelo menos um item.");
+        ValidarItens(request.Itens);
 
         var comprador = await _context.Compradores
             .FirstOrDefaultAsync(c => c.Id == request.CompradorId);
@@ -42,12 +41,6 @@ public class PedidoService : IPedidoService
 
         foreach (var itemRequest in request.Itens)
         {
-            if (itemRequest.ProdutoId == Guid.Empty)
-                throw new RegraDeNegocioException("O produto é obrigatório.");
-
-            if (itemRequest.Quantidade <= 0)
-                throw new RegraDeNegocioException("A quantidade do produto deve ser maior que zero.");
-
             var produto = await _context.Produtos
                 .FirstOrDefaultAsync(p => p.Id == itemRequest.ProdutoId);
 
@@ -67,6 +60,7 @@ public class PedidoService : IPedidoService
             });
         }
 
+        ValidarTotal(pedido.Itens);
         _context.Pedidos.Add(pedido);
         await _context.SaveChangesAsync();
 
@@ -76,6 +70,9 @@ public class PedidoService : IPedidoService
     public async Task<ResultadoPaginadoResponse<PedidoResponse>> ListarAsync(PedidoFiltroRequest filtro)
     {
         filtro ??= new PedidoFiltroRequest();
+        var deslocamento = (filtro.Pagina - 1L) * filtro.TamanhoPagina;
+        if (deslocamento > int.MaxValue)
+            throw new RegraDeNegocioException("O deslocamento da página excede o máximo permitido.");
 
         var query = _context.Pedidos
             .AsNoTracking()
@@ -94,7 +91,7 @@ public class PedidoService : IPedidoService
 
         var pedidos = await query
             .OrderByDescending(p => p.DataCriacao)
-            .Skip((filtro.Pagina - 1) * filtro.TamanhoPagina)
+            .Skip((int)deslocamento)
             .Take(filtro.TamanhoPagina)
             .ToListAsync();
 
@@ -120,6 +117,8 @@ public class PedidoService : IPedidoService
 
     public async Task AtualizarAsync(Guid id, AtualizarPedidoRequest request)
     {
+        ValidarItens(request.Itens);
+
         var pedido = await BuscarPedidoCompletoAsync(id);
 
         if (pedido is null)
@@ -128,20 +127,11 @@ public class PedidoService : IPedidoService
         if (!pedido.PodeSerAlterado())
             throw new RegraDeNegocioException("Apenas pedidos iniciados podem ser alterados.");
 
-        if (request.Itens is null || !request.Itens.Any())
-            throw new RegraDeNegocioException("O pedido deve possuir pelo menos um item.");
-
         var itensAtuais = pedido.Itens.ToList();
         var novosItens = new List<ItemPedido>();
 
         foreach (var itemRequest in request.Itens)
         {
-            if (itemRequest.ProdutoId == Guid.Empty)
-                throw new RegraDeNegocioException("O produto é obrigatório.");
-
-            if (itemRequest.Quantidade <= 0)
-                throw new RegraDeNegocioException("A quantidade do produto deve ser maior que zero.");
-
             var produto = await _context.Produtos
                 .FirstOrDefaultAsync(p => p.Id == itemRequest.ProdutoId);
 
@@ -161,12 +151,40 @@ public class PedidoService : IPedidoService
             });
         }
 
+        ValidarTotal(novosItens);
         _context.ItensPedido.RemoveRange(itensAtuais);
         await _context.ItensPedido.AddRangeAsync(novosItens);
 
         pedido.DataAtualizacao = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();
+    }
+
+    private static void ValidarItens(List<ItemPedidoRequest>? itens)
+    {
+        if (itens is null || itens.Count == 0)
+            throw new RegraDeNegocioException("O pedido deve possuir pelo menos um item.");
+
+        if (itens.Count > CriarPedidoRequest.MaximoItens)
+            throw new RegraDeNegocioException($"O pedido deve possuir no máximo {CriarPedidoRequest.MaximoItens} itens.");
+
+        foreach (var item in itens)
+        {
+            if (item is null)
+                throw new RegraDeNegocioException("Os itens do pedido não podem ser nulos.");
+
+            if (item.ProdutoId == Guid.Empty)
+                throw new RegraDeNegocioException("O produto é obrigatório.");
+
+            if (item.Quantidade <= 0)
+                throw new RegraDeNegocioException("A quantidade do produto deve ser maior que zero.");
+        }
+    }
+
+    private static void ValidarTotal(IEnumerable<ItemPedido> itens)
+    {
+        if (!Pedido.SomarItens(itens).Exato)
+            throw new RegraDeNegocioException("O valor total do pedido excede a precisão monetária suportada.");
     }
 
     public async Task ProcessarAsync(Guid id)

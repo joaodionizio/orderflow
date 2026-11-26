@@ -5,9 +5,9 @@ namespace Ecommerce.Application.Security;
 
 public static class PoliticaDeSenhas
 {
-    private const int MinimoNova = 15;
-    private const int MaximoNova = 128;
-    private const int MaximoLogin = 1024;
+    public const int MinimoNova = 15;
+    public const int MaximoNova = 128;
+    public const int MaximoLogin = 1024;
 
     private static readonly HashSet<string> FrasesComuns = new(StringComparer.OrdinalIgnoreCase)
     {

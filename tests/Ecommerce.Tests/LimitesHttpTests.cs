@@ -6,6 +6,8 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Ecommerce.Api.RateLimiting;
 using Ecommerce.Application.Dtos.Requests;
 using Ecommerce.Application.Dtos.Responses;
@@ -49,7 +51,7 @@ public class LimitesHttpTests(AutorizacaoApiFixture fixture) : IClassFixture<Aut
 
         using var invalida = new HttpRequestMessage(HttpMethod.Post, Login)
         {
-            Content = new StringContent("{", System.Text.Encoding.UTF8, "application/json")
+            Content = new StringContent("{".PadRight(16_385), Encoding.UTF8, "application/json")
         };
         invalida.Headers.Add("X-Test-Remote-Ip", Origem);
         invalida.Headers.Add("X-Forwarded-For", OutraOrigem);
@@ -103,11 +105,16 @@ public class LimitesHttpTests(AutorizacaoApiFixture fixture) : IClassFixture<Aut
         Assert.Equal(await falhaExistente.Content.ReadAsStringAsync(), await falhaInexistente.Content.ReadAsStringAsync());
 
         // A variante da conta real teria sucesso se a chamada chegasse ao serviço.
-        using var bloqueioExistente = await EnviarLoginAsync(client, new LoginRequest
+        var emailNormalizadoNaCota = JsonSerializer.Serialize($" {existente.Email.ToUpperInvariant()} ");
+        var senhaCorreta = JsonSerializer.Serialize(conta.Senha);
+        using var tentativaDuplicada = new HttpRequestMessage(HttpMethod.Post, Login)
         {
-            Email = $" {existente.Email.ToUpperInvariant()} ",
-            Senha = conta.Senha
-        }, OutraOrigem);
+            Content = new StringContent(
+                $$"""{"email":"{{Guid.NewGuid():N}}@example.test","EMAIL":{{emailNormalizadoNaCota}},"senha":{{senhaCorreta}}}""",
+                Encoding.UTF8, "application/json")
+        };
+        tentativaDuplicada.Headers.Add("X-Test-Remote-Ip", OutraOrigem);
+        using var bloqueioExistente = await client.SendAsync(tentativaDuplicada);
         using var bloqueioInexistente = await EnviarLoginAsync(client, inexistente, OutraOrigem);
         var corpo = await VerificarRejeicaoAsync(bloqueioExistente, segundos: 60);
         Assert.Equal(corpo, await VerificarRejeicaoAsync(bloqueioInexistente, segundos: 60));
@@ -230,9 +237,10 @@ public class LimitesHttpTests(AutorizacaoApiFixture fixture) : IClassFixture<Aut
         try
         {
             await iniciou.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            using var acimaDoLimite = CriarLoginAcimaDoLimite();
             using var rejeitada = global
                 ? await EnviarAsync(client, HttpMethod.Get, Produtos, fixture.OperatorToken)
-                : await EnviarLoginAsync(client, NovoLogin(), OutraOrigem);
+                : await client.SendAsync(acimaDoLimite);
             await VerificarRejeicaoAsync(rejeitada, segundos: null);
             Assert.Equal(1, monitor.Logins);
 
@@ -246,9 +254,22 @@ public class LimitesHttpTests(AutorizacaoApiFixture fixture) : IClassFixture<Aut
             Assert.Equal(HttpStatusCode.Unauthorized, concluida.StatusCode);
         }
 
+        using var aposLiberar = CriarLoginAcimaDoLimite();
+        using var acimaDoLimiteSemConcorrencia = await client.SendAsync(aposLiberar);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, acimaDoLimiteSemConcorrencia.StatusCode);
         using var recuperada = await EnviarLoginAsync(client, NovoLogin(), OutraOrigem);
         Assert.Equal(HttpStatusCode.Unauthorized, recuperada.StatusCode);
         Assert.Equal(2, monitor.Logins);
+
+        static HttpRequestMessage CriarLoginAcimaDoLimite()
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post, Login)
+            {
+                Content = new StringContent("{}".PadRight(16_385), Encoding.UTF8, "application/json")
+            };
+            request.Headers.Add("X-Test-Remote-Ip", OutraOrigem);
+            return request;
+        }
     }
 
     [SqlServerFact]

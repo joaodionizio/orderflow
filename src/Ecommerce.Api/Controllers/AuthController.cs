@@ -1,4 +1,5 @@
 using Ecommerce.Api.Authorization;
+using Ecommerce.Api.Middlewares;
 using Ecommerce.Api.RateLimiting;
 using Ecommerce.Api.Responses;
 using Ecommerce.Application.Dtos.Requests;
@@ -37,6 +38,7 @@ public class AuthController : ControllerBase
 
     [HttpPost("login")]
     [AllowAnonymous]
+    [RequestSizeLimit(LimitesDeCorpo.Login)]
     [EnableRateLimiting(LimitesHttp.Login)]
     [ServiceFilter(typeof(LimiteDeIdentificadorLoginFilter))]
     [ProducesResponseType<LoginResponse>(StatusCodes.Status200OK)]

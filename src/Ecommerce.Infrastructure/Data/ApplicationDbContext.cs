@@ -1,3 +1,4 @@
+using Ecommerce.Application.Security;
 using Ecommerce.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -95,7 +96,7 @@ public class ApplicationDbContext : DbContext
                 .IsRequired();
 
             entity.Property(usuario => usuario.Email)
-                .HasMaxLength(200)
+                .HasMaxLength(EmailDeUsuario.ComprimentoMaximo)
                 .IsRequired();
 
             entity.Property(usuario => usuario.SenhaHash)
