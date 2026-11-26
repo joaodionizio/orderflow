@@ -744,6 +744,10 @@ public sealed class AutorizacaoApiTests(AutorizacaoApiFixture fixture) : IClassF
                 var respostas = operacao.GetProperty("responses");
                 Assert.False(respostas.TryGetProperty("401", out _));
                 Assert.False(respostas.TryGetProperty("403", out _));
+                var corpoInvalido = respostas.GetProperty("400");
+                Assert.False(corpoInvalido.TryGetProperty("content", out _));
+                Assert.Equal("no-store", corpoInvalido.GetProperty("headers").GetProperty("Cache-Control")
+                    .GetProperty("schema").GetProperty("enum")[0].GetString());
                 var readiness = rota != "/health/live";
                 Assert.Equal(readiness, respostas.TryGetProperty("503", out _));
                 foreach (var codigo in readiness ? new[] { "200", "503", "429" } : ["200", "429"])

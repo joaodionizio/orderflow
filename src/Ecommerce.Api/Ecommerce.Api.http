@@ -7,6 +7,7 @@ GET {{host}}/health
 ### Criar comprador
 POST {{host}}/api/v1/compradores
 Content-Type: application/json
+Authorization: Bearer {{token}}
 
 {
   "nome": "Joao Luis",
@@ -20,6 +21,7 @@ Authorization: Bearer {{token}}
 ### Criar produto
 POST {{host}}/api/v1/produtos
 Content-Type: application/json
+Authorization: Bearer {{token}}
 
 {
   "nome": "Teclado",

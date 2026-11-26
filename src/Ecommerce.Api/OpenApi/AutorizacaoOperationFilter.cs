@@ -29,6 +29,9 @@ internal sealed class AutorizacaoOperationFilter(IAuthorizationPolicyProvider po
         if (context.ApiDescription.ActionDescriptor.EndpointMetadata.OfType<SondasDeSaude.Sonda>().Any())
         {
             DocumentarCache(operation.Responses["200"], "no-store, no-cache");
+            var corpoInvalido = operation.Responses["400"];
+            corpoInvalido.Description = "A sonda aceita somente requisições sem corpo.";
+            DocumentarCache(corpoInvalido, "no-store");
             if (operation.Responses.TryGetValue("503", out var indisponivel))
                 DocumentarCache(indisponivel, "no-store, no-cache");
         }

@@ -38,9 +38,11 @@ internal static class SondasDeSaude
     {
         var cota = readiness ? LimitesHttp.CotaDeReadiness : LimitesHttp.CotaDeLiveness;
         var get = app.MapGet(rota, SondarAsync).WithMetadata(cota, Sonda.Marcador).AllowAnonymous()
-            .Produces<EstadoDaSaude>();
+            .Produces<EstadoDaSaude>()
+            .Produces(StatusCodes.Status400BadRequest);
         var head = app.MapMethods(rota, [HttpMethods.Head], SondarAsync).WithMetadata(cota, Sonda.Marcador).AllowAnonymous()
-            .Produces(StatusCodes.Status200OK);
+            .Produces(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest);
 
         if (readiness)
         {

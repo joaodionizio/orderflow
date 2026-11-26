@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Ecommerce.Api.Health;
 using Ecommerce.Api.Responses;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Http.Metadata;
@@ -28,12 +29,25 @@ internal sealed class LimitesDeCorpo : IAsyncAlwaysRunResultFilter
             return;
         }
 
-        // Sem binding do corpo, o Kestrel drenaria a requisição só depois da resposta.
-        var acao = metadados?.GetMetadata<ControllerActionDescriptor>();
-        if (metadados is not null && PodeTerCorpo(context)
-            && acao?.Parameters.Any(parametro => parametro.BindingInfo?.BindingSource == BindingSource.Body) != true)
+        if (metadados?.GetMetadata<SondasDeSaude.Sonda>() is not null)
         {
-            await DescartarCorpoAsync(context);
+            var tamanho = context.Request.ContentLength;
+            if (tamanho > 0 || (tamanho is null && PodeTerCorpo(context)))
+            {
+                // A sonda não precisa ler o corpo para decidir se pode responder.
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                context.Response.Headers.CacheControl = "no-store";
+                context.Response.ContentLength = 0;
+                EncerrarConexaoHttp1(context);
+                return;
+            }
+        }
+        else if (metadados is not null && PodeTerCorpo(context))
+        {
+            // Sem binding do corpo, o Kestrel drenaria a requisição só depois da resposta.
+            var acao = metadados.GetMetadata<ControllerActionDescriptor>();
+            if (acao?.Parameters.Any(parametro => parametro.BindingInfo?.BindingSource == BindingSource.Body) != true)
+                await DescartarCorpoAsync(context);
         }
 
         await next(context);
@@ -61,14 +75,18 @@ internal sealed class LimitesDeCorpo : IAsyncAlwaysRunResultFilter
         var response = context.Response;
         response.StatusCode = StatusCodes.Status413PayloadTooLarge;
         response.ContentType = "application/json";
-        // Ao rejeitar o corpo, o Kestrel pode encerrar a conexão HTTP/1 antes de reutilizá-la.
-        if (HttpProtocol.IsHttp10(context.Request.Protocol) || HttpProtocol.IsHttp11(context.Request.Protocol))
-            response.Headers.Connection = "close";
-
+        EncerrarConexaoHttp1(context);
         response.ContentLength = CorpoDeExcesso.Length;
         return HttpMethods.IsHead(context.Request.Method)
             ? Task.CompletedTask
             : response.Body.WriteAsync(CorpoDeExcesso, context.RequestAborted).AsTask();
+    }
+
+    private static void EncerrarConexaoHttp1(HttpContext context)
+    {
+        // HTTP/2 e HTTP/3 deixam o encerramento do stream a cargo do Kestrel.
+        if (HttpProtocol.IsHttp10(context.Request.Protocol) || HttpProtocol.IsHttp11(context.Request.Protocol))
+            context.Response.Headers.Connection = "close";
     }
 
     private static bool PodeTerCorpo(HttpContext context) =>
