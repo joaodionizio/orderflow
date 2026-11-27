@@ -31,38 +31,39 @@ API REST corporativa interna para gerenciamento de compradores, produtos e pedid
 
 ```mermaid
 flowchart LR
-    Client[Cliente / Swagger] --> API[Ecommerce.Api]
-    API --> APP[Ecommerce.Application]
-    APP --> DOMAIN[Ecommerce.Domain]
-    API --> INFRA[Ecommerce.Infrastructure]
+    Client[Cliente / Swagger] --> API[OrderFlow.Api]
+    API --> APP[OrderFlow.Application]
+    APP --> DOMAIN[OrderFlow.Domain]
+    API --> INFRA[OrderFlow.Infrastructure]
     INFRA --> DOMAIN
     INFRA --> DB[(SQL Server)]
 ```
 
 ```text
 src
-├── Ecommerce.Api
-├── Ecommerce.Application
-├── Ecommerce.Domain
-└── Ecommerce.Infrastructure
+├── OrderFlow.Api
+├── OrderFlow.Application
+├── OrderFlow.Domain
+└── OrderFlow.Infrastructure
 
 tests
-└── Ecommerce.Domain.Tests
+├── OrderFlow.Domain.Tests
+└── OrderFlow.Tests
 ```
 
-### Ecommerce.Api
+### OrderFlow.Api
 
 Endpoints HTTP, configuração da aplicação, Swagger, health check e middleware global de exceções.
 
-### Ecommerce.Application
+### OrderFlow.Application
 
 DTOs, contratos de serviços e exceções da aplicação.
 
-### Ecommerce.Domain
+### OrderFlow.Domain
 
 Entidades, enums e regras do domínio.
 
-### Ecommerce.Infrastructure
+### OrderFlow.Infrastructure
 
 Entity Framework Core, DbContext, migrations e implementações dos serviços.
 
@@ -444,7 +445,7 @@ O Compose mantém `platform: linux/amd64` para a imagem do SQL Server 2022. No D
 `dotnet run` não carrega o `.env` automaticamente. O ASP.NET Core lê `ConnectionStrings__DefaultConnection` do ambiente do processo e usa a mesma string para o EF Core e o health check. `Jwt__Chave` fornece a chave de assinatura. O exemplo usa o emissor e o público de `appsettings.json` e o padrão de 60 minutos na ausência de `Jwt__ExpiraMinutos`. [Configuração do ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/?view=aspnetcore-10.0)
 
 ```bash
-dotnet restore Ecommerce.sln
+dotnet restore OrderFlow.sln
 dotnet tool restore
 dotnet dev-certs https --trust
 (
@@ -457,7 +458,7 @@ dotnet dev-certs https --trust
   Jwt__Chave="${Jwt__Chave:-$(openssl rand -hex 32)}"
   export Jwt__Chave
   export ConnectionStrings__DefaultConnection="Server=127.0.0.1,1433;Database=EcommerceDb;User ID=sa;Password=${sql_password};Encrypt=True;TrustServerCertificate=True"
-  dotnet run --project src/Ecommerce.Api --launch-profile https
+  dotnet run --project src/OrderFlow.Api --launch-profile https
 )
 ```
 
@@ -467,20 +468,24 @@ Para HS256, gere a chave a partir de pelo menos 32 bytes de aleatoriedade cripto
 
 Ao conectar a API a outro SQL Server, forneça a string completa e a chave JWT no ambiente. Antes das migrations, a API verifica a sintaxe da conexão, exige um servidor em `Data Source` ou `Server` e valida as configurações JWT. As mensagens indicam a configuração a corrigir sem incluir seu conteúdo.
 
+A solução `OrderFlow.sln` mantém o nome histórico `EcommerceDb` no exemplo de conexão para continuar usando o banco local existente. Os valores padrão `Ecommerce.Api` de emissor e público mantêm a compatibilidade com os tokens emitidos com essa configuração. O OpenAPI mantém `Ecommerce.Api` como título e como tag das sondas de saúde para preservar a descrição usada por clientes e geradores de código.
+
+A eventual atualização do título público no Swagger fica para uma decisão futura, após avaliar o impacto sobre consumidores e geradores de código.
+
 #### Migrations com a ferramenta local
 
 `dotnet tool restore` instala o `dotnet-ef` 10.0.15 do manifesto do repositório. Para inspecionar as migrations sem conectar ao banco, forneça `ConnectionStrings__DefaultConnection` e `Jwt__Chave` válidas no ambiente do terminal, conforme o exemplo acima. Os comandos usam a API para carregar a configuração de desenvolvimento.
 
 ```bash
-dotnet ef dbcontext list --project src/Ecommerce.Infrastructure --startup-project src/Ecommerce.Api -- --environment Development
-dotnet ef migrations list --no-connect --project src/Ecommerce.Infrastructure --startup-project src/Ecommerce.Api -- --environment Development
-dotnet ef migrations has-pending-model-changes --project src/Ecommerce.Infrastructure --startup-project src/Ecommerce.Api -- --environment Development
+dotnet ef dbcontext list --project src/OrderFlow.Infrastructure --startup-project src/OrderFlow.Api -- --environment Development
+dotnet ef migrations list --no-connect --project src/OrderFlow.Infrastructure --startup-project src/OrderFlow.Api -- --environment Development
+dotnet ef migrations has-pending-model-changes --project src/OrderFlow.Infrastructure --startup-project src/OrderFlow.Api -- --environment Development
 ```
 
 O startup da API aplica as migrations existentes. Para aplicá-las pela CLI em um SQL Server descartável, configure a conexão para esse servidor e confirme o banco de destino antes de executar o comando abaixo. Desde o EF Core 9, a aplicação de migrations falha se o modelo tiver diferenças em relação ao snapshot. [Ferramentas do EF Core](https://learn.microsoft.com/en-us/ef/core/cli/dotnet) · [Mudanças no EF Core 9](https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-9.0/breaking-changes)
 
 ```bash
-dotnet ef database update --project src/Ecommerce.Infrastructure --startup-project src/Ecommerce.Api -- --environment Development
+dotnet ef database update --project src/OrderFlow.Infrastructure --startup-project src/OrderFlow.Api -- --environment Development
 ```
 
 ### 3. Verificar a aplicação
@@ -540,7 +545,7 @@ O registro dos cabeçalhos de resposta ocorre primeiro para cobrir inclusive rej
 2. Execute o comando abaixo. Confira o servidor e o banco exibidos. Informe nome, um e-mail de funcionário ainda não cadastrado e uma senha exclusiva de 15 a 128 caracteres. A senha é solicitada duas vezes com a digitação oculta.
 
    ```bash
-   dotnet run --no-launch-profile --project src/Ecommerce.Api -- provision-admin
+   dotnet run --no-launch-profile --project src/OrderFlow.Api -- provision-admin
    ```
 
 3. Faça login com a nova conta e use seu token para provisionar operadores. O comando encerra após a tentativa, sem servir HTTP. Ele exige um terminal interativo, recebe os dados por prompt e bloqueia a criação se já existir um administrador. Uma execução com e-mail já cadastrado falha sem alterar aquela conta.
@@ -554,10 +559,10 @@ Em uma atualização de ambiente, retire de serviço as instâncias da versão a
 ## Testes
 
 ```bash
-dotnet restore Ecommerce.sln -p:NuGetAudit=true -p:NuGetAuditMode=all
-dotnet package list --project Ecommerce.sln --no-restore --vulnerable --include-transitive
-dotnet build Ecommerce.sln --configuration Release --no-restore
-dotnet test Ecommerce.sln --configuration Release --no-build
+dotnet restore OrderFlow.sln -p:NuGetAudit=true -p:NuGetAuditMode=all
+dotnet package list --project OrderFlow.sln --no-restore --vulnerable --include-transitive
+dotnet build OrderFlow.sln --configuration Release --no-restore
+dotnet test OrderFlow.sln --configuration Release --no-build
 ```
 
 Os testes unitários de serviços usam EF Core em memória. Para executar também os testes de integração, forneça `ORDERFLOW_TEST_SQLSERVER` com uma string de conexão para uma **instância SQL Server isolada**. A conta precisa criar e excluir bancos e consultar as sessões de teste para verificar o cancelamento da sonda SQL. O CI usa a conta administrativa do contêiner descartável. A suíte gera nomes exclusivos `OrderFlowTests_<guid>` para seus bancos e os remove ao final. Sem essa variável, os testes de integração são ignorados localmente e falham no GitHub Actions.
