@@ -36,7 +36,7 @@ builder.Logging.AddFilter("Microsoft.AspNetCore.HttpOverrides", LogLevel.Warning
 // Esses eventos podem carregar exceções de autenticação e detalhes do protocolo original.
 builder.Logging.AddFilter(typeof(JwtBearerHandler).FullName, LogLevel.None);
 builder.Logging.AddFilter("Microsoft.AspNetCore.Server.Kestrel.BadRequests", LogLevel.None);
-// Em .NET 8 o formatador pode registrar mensagens JSON com entrada do cliente em nível Debug.
+// O formatador pode registrar mensagens JSON com entrada do cliente em nível Debug.
 builder.Logging.AddFilter(typeof(SystemTextJsonInputFormatter).FullName, LogLevel.None);
 builder.Logging.AddFilter(DbLoggerCategory.Database.Name, LogLevel.Warning);
 builder.Logging.AddFilter(DbLoggerCategory.Database.Command.Name, LogLevel.None);

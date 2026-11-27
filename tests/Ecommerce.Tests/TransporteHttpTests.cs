@@ -59,6 +59,7 @@ public sealed class TransporteHttpTests
     [InlineData("Networks", "2001:db8:1::/64", "2001:db8:2::5", false)]
     [InlineData("Networks", "2001:db8:1::/64", "::1", false)]
     [InlineData("Networks", "2001:db8:1::/64", null, false)]
+    [InlineData("Networks", "2001:db8::c000:200/120", "::ffff:192.0.2.5", false)]
     [InlineData("Networks", "::ffff:192.0.2.0/120", "192.0.2.5", true)]
     [InlineData("Networks", "192.0.2.0/24", "::ffff:192.0.2.5", true)]
     [InlineData("Addresses", "::ffff:192.0.2.5", "192.0.2.5", true)]

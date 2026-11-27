@@ -668,7 +668,8 @@ public class PermissoesDeConcorrenciaTests
     {
         var iniciou = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var saiu = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var servidor = new TestServer(new WebHostBuilder()
+        using var host = new HostBuilder().ConfigureWebHost(builder => builder
+            .UseTestServer()
             .ConfigureServices(services =>
             {
                 services.AddRouting();
@@ -706,8 +707,10 @@ public class PermissoesDeConcorrenciaTests
                     else
                         throw new InvalidOperationException("Falha de teste.");
                 }).RequireRateLimiting(LimitesHttp.Login));
-            }));
-        using var client = servidor.CreateClient();
+            }))
+            .Build();
+        await host.StartAsync();
+        using var client = host.GetTestClient();
         using var cancelamento = new CancellationTokenSource();
 
         var falha = client.GetAsync("/login?falhar", cancelamento.Token);

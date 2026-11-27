@@ -3,12 +3,13 @@ using System.Net.Sockets;
 using Microsoft.AspNetCore.HostFiltering;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using RedeAspNet = Microsoft.AspNetCore.HttpOverrides.IPNetwork;
+using IPNetwork = System.Net.IPNetwork;
 
 namespace Ecommerce.Api.Middlewares;
 
 internal static class TransporteHttp
 {
+    private const int PrefixoIpv4Mapeado = 96;
     private static readonly IPAddress InicioDosIpv4Mapeados = IPAddress.Any.MapToIPv6();
 
     public static ForwardedHeadersOptions? Configurar(WebApplicationBuilder builder)
@@ -39,7 +40,7 @@ internal static class TransporteHttp
     {
         if (encaminhamento is not null)
         {
-            app.UseWhen(TemParEncaminhado,
+            app.UseWhen(context => PodeEncaminhar(context, encaminhamento),
                 branch => branch.UseForwardedHeaders(encaminhamento));
         }
 
@@ -53,18 +54,24 @@ internal static class TransporteHttp
         app.UseHsts();
     }
 
-    private static bool TemParEncaminhado(HttpContext context)
+    private static bool PodeEncaminhar(HttpContext context, ForwardedHeadersOptions encaminhamento)
     {
         // O middleware nativo aceita cabeçalhos sem verificar a origem quando não há IP remoto.
-        if (context.Connection.RemoteIpAddress is null)
+        if (context.Connection.RemoteIpAddress is not { } remoto)
             return false;
 
         var enderecos = context.Request.Headers[ForwardedHeadersDefaults.XForwardedForHeaderName];
         var esquemas = context.Request.Headers[ForwardedHeadersDefaults.XForwardedProtoHeaderName];
-        return enderecos.Count == 1 && enderecos[0] is { Length: > 0 } endereco &&
+        var parValido = enderecos.Count == 1 && enderecos[0] is { Length: > 0 } endereco &&
             endereco.AsSpan().IndexOfAny(',', '"') < 0 && esquemas.Count == 1 &&
             (string.Equals(esquemas[0], "https", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(esquemas[0], "http", StringComparison.OrdinalIgnoreCase));
+        if (!parValido || !remoto.IsIPv4MappedToIPv6)
+            return parValido;
+
+        // O middleware também testa o endereço mapeado como IPv6. No .NET 10, esse teste pode aceitar uma rede IPv6 sem relação.
+        var ipv4 = remoto.MapToIPv4();
+        return encaminhamento.KnownProxies.Contains(ipv4) || encaminhamento.KnownIPNetworks.Any(rede => rede.Contains(ipv4));
     }
 
     private static bool EhHostExato(string host)
@@ -105,11 +112,11 @@ internal static class TransporteHttp
         };
         // Substitui os loopbacks padrão pela lista explícita e validada acima.
         opcoes.KnownProxies.Clear();
-        opcoes.KnownNetworks.Clear();
+        opcoes.KnownIPNetworks.Clear();
         foreach (var endereco in enderecos)
             opcoes.KnownProxies.Add(endereco);
         foreach (var rede in redes)
-            opcoes.KnownNetworks.Add(rede);
+            opcoes.KnownIPNetworks.Add(rede);
 
         return opcoes;
     }
@@ -134,24 +141,27 @@ internal static class TransporteHttp
         throw new InvalidOperationException($"{entrada.Path} deve conter um endereço IP específico.");
     }
 
-    private static RedeAspNet InterpretarRede(IConfigurationSection entrada)
+    private static IPNetwork InterpretarRede(IConfigurationSection entrada)
     {
-        if (System.Net.IPNetwork.TryParse(entrada.Value?.Trim(), out var rede) && SemEscopo(rede.BaseAddress))
+        var cidr = entrada.Value.AsSpan().Trim();
+        // O .NET 10 zera os bits de host durante o parse. A configuração exige a base exata da rede.
+        if (IPNetwork.TryParse(cidr, out var rede) && IPAddress.TryParse(cidr[..cidr.LastIndexOf('/')], out var ip) &&
+            SemEscopo(ip) && ip.Equals(rede.BaseAddress))
         {
-            var ip = rede.BaseAddress;
             var prefixo = rede.PrefixLength;
             if (ip.IsIPv4MappedToIPv6)
             {
                 ip = ip.MapToIPv4();
-                prefixo -= 96;
+                prefixo -= PrefixoIpv4Mapeado;
             }
-            else if (rede.Contains(InicioDosIpv4Mapeados))
+            else if (ip.AddressFamily == AddressFamily.InterNetworkV6 && prefixo <= PrefixoIpv4Mapeado &&
+                new IPNetwork(InicioDosIpv4Mapeados, prefixo).BaseAddress.Equals(ip))
             {
                 throw new InvalidOperationException($"{entrada.Path} não pode abranger todo o espaço IPv4 mapeado em IPv6.");
             }
 
             if (prefixo > 0)
-                return new RedeAspNet(ip, prefixo);
+                return new IPNetwork(ip, prefixo);
         }
 
         throw new InvalidOperationException($"{entrada.Path} deve conter uma rede CIDR válida com prefixo maior que zero.");

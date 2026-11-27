@@ -15,17 +15,24 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
-          dotnet-version: '8.0.x'
+          global-json-file: global.json
+          skip-lts-prepass: true
 
-      - name: Restore
-        run: dotnet restore Ecommerce.sln
+      - name: Restore and audit NuGet packages
+        run: >-
+          dotnet restore Ecommerce.sln
+          -p:NuGetAudit=true -p:NuGetAuditMode=all
+          -warnAsError:NU1900,NU1901,NU1902,NU1903,NU1904,NU1905
+
+      - name: Report direct and transitive vulnerabilities
+        run: dotnet package list --project Ecommerce.sln --no-restore --include-transitive --vulnerable
 
       - name: Build
         run: dotnet build Ecommerce.sln --configuration Release --no-restore
