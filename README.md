@@ -18,9 +18,9 @@ API REST corporativa interna para gerenciamento de compradores, produtos e pedid
 
 ## Tecnologias
 
-- .NET 8
-- ASP.NET Core Web API
-- Entity Framework Core 8
+- .NET 10 LTS (SDK 10.0.404, runtime 10.0.15)
+- ASP.NET Core 10 Web API
+- Entity Framework Core 10.0.15
 - SQL Server 2022
 - Docker Compose
 - Swagger / OpenAPI
@@ -31,38 +31,39 @@ API REST corporativa interna para gerenciamento de compradores, produtos e pedid
 
 ```mermaid
 flowchart LR
-    Client[Cliente / Swagger] --> API[Ecommerce.Api]
-    API --> APP[Ecommerce.Application]
-    APP --> DOMAIN[Ecommerce.Domain]
-    API --> INFRA[Ecommerce.Infrastructure]
+    Client[Cliente / Swagger] --> API[OrderFlow.Api]
+    API --> APP[OrderFlow.Application]
+    APP --> DOMAIN[OrderFlow.Domain]
+    API --> INFRA[OrderFlow.Infrastructure]
     INFRA --> DOMAIN
     INFRA --> DB[(SQL Server)]
 ```
 
 ```text
 src
-├── Ecommerce.Api
-├── Ecommerce.Application
-├── Ecommerce.Domain
-└── Ecommerce.Infrastructure
+├── OrderFlow.Api
+├── OrderFlow.Application
+├── OrderFlow.Domain
+└── OrderFlow.Infrastructure
 
 tests
-└── Ecommerce.Domain.Tests
+├── OrderFlow.Domain.Tests
+└── OrderFlow.Tests
 ```
 
-### Ecommerce.Api
+### OrderFlow.Api
 
 Endpoints HTTP, configuração da aplicação, Swagger, health check e middleware global de exceções.
 
-### Ecommerce.Application
+### OrderFlow.Application
 
 DTOs, contratos de serviços e exceções da aplicação.
 
-### Ecommerce.Domain
+### OrderFlow.Domain
 
 Entidades, enums e regras do domínio.
 
-### Ecommerce.Infrastructure
+### OrderFlow.Infrastructure
 
 Entity Framework Core, DbContext, migrations e implementações dos serviços.
 
@@ -102,7 +103,7 @@ Regras implementadas:
 
 O cadastro recebe `nome`, `email` e `senha`. O servidor provisiona sempre um `Operator` e rejeita campos extras, incluindo `role` e `perfil`. O login retorna o token JWT em `token` e a validade em `expiraEm`. Use `Authorization: Bearer <token>` nas rotas protegidas. No Swagger em desenvolvimento, use **Authorize** para informar o JWT e consulte os perfis exigidos por operação. Tokens ausentes ou inválidos recebem `401` nas rotas protegidas. Um token válido sem o perfil exigido recebe `403`.
 
-A fallback policy do ASP.NET Core aplica a mesma regra de `Operacao` a endpoints sem metadados de autorização. A policy padrão também aplica `Operacao` quando uma rota usa somente `[Authorize]`. As policies explícitas continuam sendo `Operacao` para `Admin` ou `Operator` e `Provisionamento` para `Admin`. A validação JWT existente desconsidera perfis ausentes, desconhecidos ou ambíguos. Contas legadas sem perfil podem fazer login e recebem `403` nas operações protegidas. [Policies de autorização no ASP.NET Core](https://learn.microsoft.com/aspnet/core/security/authorization/policies?view=aspnetcore-8.0)
+A fallback policy do ASP.NET Core aplica a mesma regra de `Operacao` a endpoints sem metadados de autorização. A policy padrão também aplica `Operacao` quando uma rota usa somente `[Authorize]`. As policies explícitas continuam sendo `Operacao` para `Admin` ou `Operator` e `Provisionamento` para `Admin`. A validação JWT existente desconsidera perfis ausentes, desconhecidos ou ambíguos. Contas legadas sem perfil podem fazer login e recebem `403` nas operações protegidas. [Policies de autorização no ASP.NET Core](https://learn.microsoft.com/aspnet/core/security/authorization/policies?view=aspnetcore-10.0)
 
 O login e as três sondas declaram acesso anônimo. Depois das verificações de transporte e cotas, a fallback também é aplicada a requisições sem rota correspondente ou com método incompatível. Elas recebem `401` sem token válido ou `403` sem perfil operacional. Clientes com perfil operacional recebem `404` para rotas inexistentes e `405` para métodos incompatíveis com uma rota existente.
 
@@ -128,6 +129,8 @@ O login e as três sondas declaram acesso anônimo. Depois das verificações de
 #### Swagger e OpenAPI
 
 O gerador OpenAPI, o JSON e a Swagger UI são habilitados exclusivamente pelo ambiente `Development`. Em `Staging` e `Production`, esses caminhos seguem o tratamento de rotas inexistentes. O filtro OpenAPI usa a combinação de policies do ASP.NET Core para documentar Bearer, perfis e respostas `401` e `403`, inclusive quando uma ação depende da fallback. O login e as [sondas de saúde](#health-check) aparecem sem exigência de Bearer. A interface continua recebendo os cabeçalhos de segurança descritos em [Cabeçalhos e ordem do pipeline](#cabeçalhos-e-ordem-do-pipeline).
+
+O SwaggerGen 9.0.6 usa o Microsoft.OpenApi 1.6.31 para preservar a API usada pelos filtros. O documento é serializado como OpenAPI 3.0.4. A Swagger UI 11.0.1 tem ciclo de atualização independente do gerador e lê esse JSON. Ao atualizar a interface, confira também os advisories das bibliotecas JavaScript do bundle. [Migração do Swashbuckle para OpenAPI.NET 2](https://github.com/domaindrivendev/Swashbuckle.AspNetCore/blob/master/docs/migrating-to-v10.md)
 
 | Rota | Resposta | Condição |
 | --- | --- | --- |
@@ -195,7 +198,7 @@ Os tetos de corpo são valores iniciais para desenvolvimento. O login usa menos 
 
 A aplicação rejeita um `Content-Length` excessivo antes de acessar os serviços, após as cotas e a autorização aplicáveis. O Kestrel também limita os bytes observados durante a leitura quando o cabeçalho está ausente. Em HTTP/1.1 com `Transfer-Encoding: chunked`, o Kestrel conta parte do enquadramento dos blocos, de modo que o espaço útil para JSON é um pouco menor. Nas rotas sem corpo declarado, a aplicação descarta o corpo de forma incremental antes de executar a ação. Em ações com JSON, o MVC desserializa o corpo uma vez. Em caso de erro `400` ou `415` sem tamanho declarado, a aplicação descarta o restante da mesma leitura sob o limite do Kestrel. Autorizações ou cotas podem rejeitar a requisição antes da leitura. Um proxy pode aplicar seu próprio teto ou formato de erro antes que a requisição chegue à aplicação. Configure o proxy e o servidor de hospedagem de acordo com o contrato do ambiente. [Limites do Kestrel](https://learn.microsoft.com/aspnet/core/fundamentals/servers/kestrel/options)
 
-Login e cadastro rejeitam propriedades JSON desconhecidas, inclusive tentativas de enviar o perfil no cadastro. Clientes de login que enviavam campos extras agora recebem `400` e devem enviar apenas `email` e `senha`. Os DTOs operacionais continuam aceitando propriedades adicionais. O `System.Text.Json` no .NET 8 compara os nomes das propriedades conhecidas sem distinguir maiúsculas de minúsculas. Quando a desserialização termina com sucesso, o valor da última ocorrência é o que passa pela validação e chega à cota por identificador e à autenticação. O login mede o e-mail recebido antes da normalização compartilhada entre autenticação e limitador. A senha mantém a política Unicode, os espaços e os limites descritos na seção de senhas. [Membros desconhecidos no System.Text.Json](https://learn.microsoft.com/dotnet/standard/serialization/system-text-json/missing-members)
+Login e cadastro rejeitam propriedades JSON desconhecidas, inclusive tentativas de enviar o perfil no cadastro. Clientes de login que enviavam campos extras agora recebem `400` e devem enviar apenas `email` e `senha`. Os DTOs operacionais continuam aceitando propriedades adicionais. A configuração web do `System.Text.Json` compara os nomes das propriedades conhecidas sem distinguir maiúsculas de minúsculas. Quando a desserialização termina com sucesso, o valor da última ocorrência é o que passa pela validação e chega à cota por identificador e à autenticação. O login mede o e-mail recebido antes da normalização compartilhada entre autenticação e limitador. A senha mantém a política Unicode, os espaços e os limites descritos na seção de senhas. [Membros desconhecidos no System.Text.Json](https://learn.microsoft.com/dotnet/standard/serialization/system-text-json/missing-members)
 
 Pedidos com coleções estruturalmente inválidas são rejeitados antes de consultar o banco. O teto de itens também limita o número de consultas individuais de produto. Os resultados da análise de custo da paginação estão em [Comportamento no SQL Server](#comportamento-no-sql-server).
 
@@ -208,7 +211,7 @@ Pedidos com coleções estruturalmente inválidas são rejeitados antes de consu
 | `Jwt__Chave` | Chave de assinatura obrigatória, com pelo menos 32 bytes em UTF-8. Forneça pelo ambiente ou por um gerenciador de segredos. |
 | `Jwt__ExpiraMinutos` | Inteiro de 1 a 60. O padrão de 60 minutos só vale se a configuração estiver ausente. Um valor vazio é inválido. |
 
-A API valida essas configurações antes das migrations. Aceita exclusivamente `HS256` com assinatura válida. Compara `iss` e `aud` por igualdade ordinal, incluindo capitalização e barras finais. O público deve ser um único valor, como string ou array de um elemento. `exp` é obrigatório e indica o instante a partir do qual o token expira. Quando presente, `nbf` indica o primeiro instante de validade. Ambos usam segundos inteiros desde a época Unix, com tolerância de relógio zero. Falhas de autenticação em rotas protegidas recebem `401`, `WWW-Authenticate: Bearer` e corpo vazio. [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519.html#section-4.1) · [Opções do JWT Bearer no ASP.NET Core](https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.authentication.jwtbearer.jwtbeareroptions?view=aspnetcore-8.0)
+A API valida essas configurações antes das migrations. Aceita exclusivamente `HS256` com assinatura válida. Compara `iss` e `aud` por igualdade ordinal, incluindo capitalização e barras finais. O público deve ser um único valor, como string ou array de um elemento. `exp` é obrigatório e indica o instante a partir do qual o token expira. Quando presente, `nbf` indica o primeiro instante de validade. Ambos usam segundos inteiros desde a época Unix, com tolerância de relógio zero. Falhas de autenticação em rotas protegidas recebem `401`, `WWW-Authenticate: Bearer` e corpo vazio. [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519.html#section-4.1) · [Opções do JWT Bearer no ASP.NET Core](https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.authentication.jwtbearer.jwtbeareroptions?view=aspnetcore-10.0)
 
 O `sub` deve ser uma única string com o GUID persistido do funcionário no formato `D`, diferente de `Guid.Empty`. Claims de identidade ambíguas recebem `401`. A API mantém os nomes originais das claims, com `sub` como identidade e `role` como perfil. `Operacao` exige uma única claim `role` escalar com `Admin` ou `Operator`. `Provisionamento` exige uma única claim `role` escalar com `Admin`. Perfil ausente, múltiplo, desconhecido ou apresentado por alias resulta em `403` nas rotas com essas policies quando o token é válido. Os novos tokens incluem `sub`, `iss`, `aud`, `exp` e, quando aplicável, `role`. Nome e e-mail ficam fora das novas emissões. Tokens anteriores emitidos pela API com essas claims continuam válidos enquanto atendem às regras de validação. Swagger e os fluxos HTTP do repositório usam o token como valor opaco. Integrações que decodificam o JWT precisam usar `sub` para identificar a conta.
 
@@ -395,7 +398,13 @@ Fora de `Development`, configure as sondas com HTTPS e um `Host` permitido. Rest
 
 ## Como executar
 
-Use o SDK .NET 8 compatível com `global.json`, o Docker com Compose v2 ou superior e o OpenSSL. Execute os comandos abaixo na raiz do repositório, em Bash ou Zsh.
+Instale o SDK .NET 10.0.404 fixado em `global.json`, o Docker com Compose v2 ou superior e o OpenSSL. No macOS com Apple Silicon, use a distribuição Arm64 do SDK. Execute os comandos abaixo na raiz do repositório, em Bash ou Zsh. `dotnet --version` deve mostrar `10.0.404`. [Download oficial do .NET 10](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)
+
+Instale o SDK em um diretório persistente, como `~/.dotnet` ou o destino do instalador oficial. Com uma instalação no diretório do usuário, inclua o diretório no `PATH` da sessão de login e confira se a IDE usa o mesmo executável exibido por `command -v dotnet`. O SDK contém as ferramentas de compilação. O `net10.0` dos projetos define a plataforma-alvo da aplicação e dos testes.
+
+Quando sair um patch de segurança do .NET 10, instale o novo SDK lado a lado, confira o checksum publicado pela Microsoft e atualize a versão exata em `global.json`, mantendo `rollForward: disable`. Revise os patches dos pacotes ASP.NET Core, do EF Core e do `dotnet-ef` no mesmo incremento e atualize as versões documentadas. Repita a auditoria transitiva, o build Release e os testes com SQL Server descartável. O CI lê a versão do SDK de `global.json`. [Política de suporte do .NET](https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core)
+
+O SqlClient 6.1.8 fixa o patch da série usada pelo provedor do EF Core, cujo mínimo é 6.1.7. A referência de OpenID Connect mantém toda a família IdentityModel em 8.19.2, inclusive na infraestrutura, que recebe uma versão anterior pelo SqlClient. Essa é a mesma versão usada pelo JWT Bearer 10.0.15. [Release do SqlClient 6.1.8](https://github.com/dotnet/SqlClient/releases/tag/v6.1.8) · [Namespaces e pacotes do IdentityModel](https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet/wiki)
 
 ### 1. Configurar e subir o SQL Server
 
@@ -433,10 +442,11 @@ O Compose mantém `platform: linux/amd64` para a imagem do SQL Server 2022. No D
 
 ### 2. Restaurar dependências e executar a API no host
 
-`dotnet run` não carrega o `.env` automaticamente. O ASP.NET Core lê `ConnectionStrings__DefaultConnection` do ambiente do processo e usa a mesma string para o EF Core e o health check. `Jwt__Chave` fornece a chave de assinatura. O exemplo usa o emissor e o público de `appsettings.json` e o padrão de 60 minutos na ausência de `Jwt__ExpiraMinutos`. [Configuração do ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/?view=aspnetcore-8.0)
+`dotnet run` não carrega o `.env` automaticamente. O ASP.NET Core lê `ConnectionStrings__DefaultConnection` do ambiente do processo e usa a mesma string para o EF Core e o health check. `Jwt__Chave` fornece a chave de assinatura. O exemplo usa o emissor e o público de `appsettings.json` e o padrão de 60 minutos na ausência de `Jwt__ExpiraMinutos`. [Configuração do ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/?view=aspnetcore-10.0)
 
 ```bash
-dotnet restore Ecommerce.sln
+dotnet restore OrderFlow.sln
+dotnet tool restore
 dotnet dev-certs https --trust
 (
   set -e
@@ -448,7 +458,7 @@ dotnet dev-certs https --trust
   Jwt__Chave="${Jwt__Chave:-$(openssl rand -hex 32)}"
   export Jwt__Chave
   export ConnectionStrings__DefaultConnection="Server=127.0.0.1,1433;Database=EcommerceDb;User ID=sa;Password=${sql_password};Encrypt=True;TrustServerCertificate=True"
-  dotnet run --project src/Ecommerce.Api --launch-profile https
+  dotnet run --project src/OrderFlow.Api --launch-profile https
 )
 ```
 
@@ -457,6 +467,26 @@ O exemplo usa `sa` e `TrustServerCertificate=True` para o contêiner local com c
 Para HS256, gere a chave a partir de pelo menos 32 bytes de aleatoriedade criptográfica, como faz `openssl rand -hex 32` no exemplo. A API mede o comprimento da chave em bytes UTF-8. Caracteres multibyte ocupam mais de um byte, e o comprimento por si só não indica a entropia da chave. Emissão e validação usam a mesma chave carregada no startup. A chave gerada pelo exemplo muda a cada execução se nenhuma chave for fornecida, o que invalida os tokens anteriores. Para manter os tokens entre reinícios, forneça a mesma chave de desenvolvimento por um gerenciador de segredos. [Requisitos do HS256](https://datatracker.ietf.org/doc/html/rfc7518#section-3.2) · [Entropia da chave](https://datatracker.ietf.org/doc/html/rfc8725#section-3.5)
 
 Ao conectar a API a outro SQL Server, forneça a string completa e a chave JWT no ambiente. Antes das migrations, a API verifica a sintaxe da conexão, exige um servidor em `Data Source` ou `Server` e valida as configurações JWT. As mensagens indicam a configuração a corrigir sem incluir seu conteúdo.
+
+A solução `OrderFlow.sln` mantém o nome histórico `EcommerceDb` no exemplo de conexão para continuar usando o banco local existente. Os valores padrão `Ecommerce.Api` de emissor e público mantêm a compatibilidade com os tokens emitidos com essa configuração. O OpenAPI mantém `Ecommerce.Api` como título e como tag das sondas de saúde para preservar a descrição usada por clientes e geradores de código.
+
+A eventual atualização do título público no Swagger fica para uma decisão futura, após avaliar o impacto sobre consumidores e geradores de código.
+
+#### Migrations com a ferramenta local
+
+`dotnet tool restore` instala o `dotnet-ef` 10.0.15 do manifesto do repositório. Para inspecionar as migrations sem conectar ao banco, forneça `ConnectionStrings__DefaultConnection` e `Jwt__Chave` válidas no ambiente do terminal, conforme o exemplo acima. Os comandos usam a API para carregar a configuração de desenvolvimento.
+
+```bash
+dotnet ef dbcontext list --project src/OrderFlow.Infrastructure --startup-project src/OrderFlow.Api -- --environment Development
+dotnet ef migrations list --no-connect --project src/OrderFlow.Infrastructure --startup-project src/OrderFlow.Api -- --environment Development
+dotnet ef migrations has-pending-model-changes --project src/OrderFlow.Infrastructure --startup-project src/OrderFlow.Api -- --environment Development
+```
+
+O startup da API aplica as migrations existentes. Para aplicá-las pela CLI em um SQL Server descartável, configure a conexão para esse servidor e confirme o banco de destino antes de executar o comando abaixo. Desde o EF Core 9, a aplicação de migrations falha se o modelo tiver diferenças em relação ao snapshot. [Ferramentas do EF Core](https://learn.microsoft.com/en-us/ef/core/cli/dotnet) · [Mudanças no EF Core 9](https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-9.0/breaking-changes)
+
+```bash
+dotnet ef database update --project src/OrderFlow.Infrastructure --startup-project src/OrderFlow.Api -- --environment Development
+```
 
 ### 3. Verificar a aplicação
 
@@ -468,7 +498,7 @@ curl --fail --show-error https://localhost:7018/health
 
 ### HTTPS, proxies e hosts
 
-Em `Development`, o perfil `https` escuta em `https://localhost:7018` e `http://localhost:5115`. Quando há uma porta HTTPS configurada ou detectada, o ASP.NET Core retorna `307` com `Cache-Control: no-store` para requisições HTTP. O perfil `http` mantém `http://localhost:5115` para verificações locais, como `GET /health`, sem redirecionamento quando só há um listener HTTP. Use o perfil `https` para login e requisições com tokens. Um redirecionamento pode preservar o método e o corpo, mas credenciais já enviadas por HTTP foram transmitidas sem TLS. O certificado de desenvolvimento fica restrito ao ambiente local. [HTTPS no ASP.NET Core](https://learn.microsoft.com/aspnet/core/security/enforcing-ssl?view=aspnetcore-8.0)
+Em `Development`, o perfil `https` escuta em `https://localhost:7018` e `http://localhost:5115`. Quando há uma porta HTTPS configurada ou detectada, o ASP.NET Core retorna `307` com `Cache-Control: no-store` para requisições HTTP. O perfil `http` mantém `http://localhost:5115` para verificações locais, como `GET /health`, sem redirecionamento quando só há um listener HTTP. Use o perfil `https` para login e requisições com tokens. Um redirecionamento pode preservar o método e o corpo, mas credenciais já enviadas por HTTP foram transmitidas sem TLS. O certificado de desenvolvimento fica restrito ao ambiente local. [HTTPS no ASP.NET Core](https://learn.microsoft.com/aspnet/core/security/enforcing-ssl?view=aspnetcore-10.0)
 
 Fora de `Development`, a API exige HTTPS e devolve `400` com corpo vazio e `Cache-Control: no-store` a requisições HTTP que chegam à aplicação. A aplicação rejeita a requisição antes de ler o corpo, validar o token ou debitar cotas. Credenciais que já chegaram por HTTP trafegaram em claro mesmo quando a API devolve `400`. Clientes e sondas devem acessar uma URL HTTPS desde a primeira requisição. Configure HTTPS no ponto de entrada e desabilite o listener HTTP externo ou rejeite HTTP no gateway.
 
@@ -477,7 +507,7 @@ Fora de `Development`, a API exige HTTPS e devolve `400` com corpo vazio e `Cach
 | Acesso direto ao Kestrel | Configure apenas o listener HTTPS do Kestrel e forneça um certificado confiável para o host pelo ambiente de implantação. Use `Kestrel__Endpoints__Https__Url` e `Kestrel__Endpoints__Https__Certificate__Path` para configurar um certificado montado. Forneça `Kestrel__Endpoints__Https__Certificate__Password` pelo gerenciador de segredos quando o arquivo exigir senha. Mantenha certificados de desenvolvimento fora do ambiente de produção e o encaminhamento desabilitado. |
 | Terminação TLS no gateway | O gateway recebe HTTPS, preserva o `Host` autorizado e sobrescreve `X-Forwarded-For` com o IP do cliente e `X-Forwarded-Proto` com o esquema que observou. Restrinja o listener do Kestrel aos proxies confiáveis por firewall ou rede privada. Use TLS também entre o gateway e o Kestrel quando a rede intermediária não oferecer proteção suficiente para tokens e corpos de requisição. |
 
-Passe `AllowedHosts` como configuração externa em `Production` e nos demais ambientes fora de `Development`. Use nomes ou IPs exatos separados por ponto e vírgula, sem portas, esquemas ou curingas. Escreva IPv6 entre colchetes e use a mesma representação textual enviada no `Host`. O filtro nativo compara o host sem distinguir maiúsculas e minúsculas e ignora a porta da requisição. Em `Development`, a lista padrão permite `localhost`, `127.0.0.1` e `[::1]`. A API encerra no startup se a lista estiver ausente ou inválida. Hosts ausentes ou não autorizados recebem `400` com corpo vazio. Cadastre no backend o `Host` que o gateway envia. O filtro verifica o destino HTTP e a autorização continua baseada no JWT e nas políticas de acesso. [Filtragem de hosts no Kestrel](https://learn.microsoft.com/aspnet/core/fundamentals/servers/kestrel/host-filtering?view=aspnetcore-8.0)
+Passe `AllowedHosts` como configuração externa em `Production` e nos demais ambientes fora de `Development`. Use nomes ou IPs exatos separados por ponto e vírgula, sem portas, esquemas ou curingas. Escreva IPv6 entre colchetes e use a mesma representação textual enviada no `Host`. O filtro nativo compara o host sem distinguir maiúsculas e minúsculas e ignora a porta da requisição. Em `Development`, a lista padrão permite `localhost`, `127.0.0.1` e `[::1]`. A API encerra no startup se a lista estiver ausente ou inválida. Hosts ausentes ou não autorizados recebem `400` com corpo vazio. Cadastre no backend o `Host` que o gateway envia. O filtro verifica o destino HTTP e a autorização continua baseada no JWT e nas políticas de acesso. [Filtragem de hosts no Kestrel](https://learn.microsoft.com/aspnet/core/fundamentals/servers/kestrel/host-filtering?view=aspnetcore-10.0)
 
 Exemplo de variáveis externas. Substitua os valores de documentação pelo host autorizado e pelo endereço de conexão do gateway visto pelo Kestrel. Os exemplos de IP e CIDR são alternativas e podem ser combinados se ambos corresponderem a proxies autorizados.
 
@@ -490,7 +520,7 @@ TrustedProxies__Networks__0=2001:db8:1::/64
 
 `TrustedProxies` fica desabilitado por padrão. Ao habilitá-lo, forneça pelo menos um IP específico ou uma rede CIDR dedicada aos proxies. A aplicação valida a lista no startup e rejeita prefixos zero e redes IPv6 que abranjam todo o espaço IPv4 mapeado. IPv4, IPv6 e IPv4 mapeado em IPv6 são aceitos. As redes configuradas são cumulativas. Uma rede abrangente só é apropriada se todo o intervalo estiver reservado a proxies administrados e isolado de clientes e outras cargas. Prefira IPs individuais se o segmento for compartilhado.
 
-O middleware nativo verifica o IP da conexão e consome no máximo um salto. A API só considera um par com um valor em cada cabeçalho, `X-Forwarded-For` com o endereço e `X-Forwarded-Proto` com `http` ou `https`. Pares incompletos, malformados ou com múltiplos valores são ignorados. O gateway deve sobrescrever os cabeçalhos do cliente. `X-Forwarded-Host` não é processado. A ativação de `ASPNETCORE_FORWARDEDHEADERS_ENABLED` no startup é incompatível com a política explícita. Reinicie a API ao mudar a lista de hosts ou proxies. [Proxies no ASP.NET Core](https://learn.microsoft.com/aspnet/core/host-and-deploy/proxy-load-balancer?view=aspnetcore-8.0) · [Validação de proxies no .NET 8](https://learn.microsoft.com/aspnet/core/breaking-changes/8/forwarded-headers-unknown-proxies)
+O middleware nativo verifica o IP da conexão e consome no máximo um salto. A API só considera um par com um valor em cada cabeçalho, `X-Forwarded-For` com o endereço e `X-Forwarded-Proto` com `http` ou `https`. Pares incompletos, malformados ou com múltiplos valores são ignorados. O gateway deve sobrescrever os cabeçalhos do cliente. `X-Forwarded-Host` não é processado. A ativação de `ASPNETCORE_FORWARDEDHEADERS_ENABLED` no startup é incompatível com a política explícita. Reinicie a API ao mudar a lista de hosts ou proxies. [Proxies no ASP.NET Core](https://learn.microsoft.com/aspnet/core/host-and-deploy/proxy-load-balancer?view=aspnetcore-10.0) · [Redes de proxies no ASP.NET Core 10](https://learn.microsoft.com/en-us/aspnet/core/breaking-changes/10/ipnetwork-knownnetworks-obsolete)
 
 A cota de login usa o `RemoteIpAddress` depois do encaminhamento confiável. Em acesso direto, usa o IP da conexão e ignora os cabeçalhos encaminhados. Atrás do proxy, um IP de origem ausente ou um par de cabeçalhos mal configurado pode fazer vários clientes compartilharem a cota do gateway ou levar à rejeição da requisição HTTP se o gateway terminou TLS. Um proxy confiável pode afirmar IP e esquema, por isso o firewall deve impedir o acesso direto indevido ao backend e a rede autorizada deve conter somente proxies administrados. Passe a string do SQL Server, a chave JWT e qualquer senha de certificado pelo gerenciador de segredos ou pelo ambiente protegido do serviço, sem versionar valores nem registrá-los nos logs.
 
@@ -515,7 +545,7 @@ O registro dos cabeçalhos de resposta ocorre primeiro para cobrir inclusive rej
 2. Execute o comando abaixo. Confira o servidor e o banco exibidos. Informe nome, um e-mail de funcionário ainda não cadastrado e uma senha exclusiva de 15 a 128 caracteres. A senha é solicitada duas vezes com a digitação oculta.
 
    ```bash
-   dotnet run --no-launch-profile --project src/Ecommerce.Api -- provision-admin
+   dotnet run --no-launch-profile --project src/OrderFlow.Api -- provision-admin
    ```
 
 3. Faça login com a nova conta e use seu token para provisionar operadores. O comando encerra após a tentativa, sem servir HTTP. Ele exige um terminal interativo, recebe os dados por prompt e bloqueia a criação se já existir um administrador. Uma execução com e-mail já cadastrado falha sem alterar aquela conta.
@@ -529,17 +559,17 @@ Em uma atualização de ambiente, retire de serviço as instâncias da versão a
 ## Testes
 
 ```bash
-dotnet restore Ecommerce.sln -p:NuGetAudit=true -p:NuGetAuditMode=all
-dotnet list Ecommerce.sln package --vulnerable --include-transitive
-dotnet build Ecommerce.sln --configuration Release --no-restore
-dotnet test Ecommerce.sln --configuration Release --no-build
+dotnet restore OrderFlow.sln -p:NuGetAudit=true -p:NuGetAuditMode=all
+dotnet package list --project OrderFlow.sln --no-restore --vulnerable --include-transitive
+dotnet build OrderFlow.sln --configuration Release --no-restore
+dotnet test OrderFlow.sln --configuration Release --no-build
 ```
 
 Os testes unitários de serviços usam EF Core em memória. Para executar também os testes de integração, forneça `ORDERFLOW_TEST_SQLSERVER` com uma string de conexão para uma **instância SQL Server isolada**. A conta precisa criar e excluir bancos e consultar as sessões de teste para verificar o cancelamento da sonda SQL. O CI usa a conta administrativa do contêiner descartável. A suíte gera nomes exclusivos `OrderFlowTests_<guid>` para seus bancos e os remove ao final. Sem essa variável, os testes de integração são ignorados localmente e falham no GitHub Actions.
 
 ## Integração contínua
 
-O workflow em `.github/workflows/ci.yml` executa restore, build em Release e testes a cada pull request ou push para `main`. O runner sobe um SQL Server descartável com senha gerada para os testes de integração.
+O workflow em `.github/workflows/ci.yml` instala o SDK fixado em `global.json` e executa restore, build em Release e testes a cada pull request ou push para `main`. O restore audita dependências diretas e transitivas. O CI falha ao detectar uma vulnerabilidade ou uma falha na consulta aos dados de auditoria. O runner sobe um SQL Server 2022 descartável com uma senha aleatória mascarada nos logs. [Auditoria de dependências NuGet](https://learn.microsoft.com/en-us/nuget/concepts/auditing-packages)
 
 ## Contribuição
 
