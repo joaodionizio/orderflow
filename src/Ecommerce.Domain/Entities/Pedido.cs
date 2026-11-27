@@ -18,9 +18,27 @@ public class Pedido
 
     public ICollection<ItemPedido> Itens { get; set; } = new List<ItemPedido>();
 
-    public decimal CalcularValorTotal()
+    public decimal CalcularValorTotal() => SomarItens(Itens).Valor;
+
+    public static (decimal Valor, bool Exato) SomarItens(IEnumerable<ItemPedido> itens)
     {
-        return Itens.Sum(item => item.PrecoUnitario * item.Quantidade);
+        // Somar subtotais muito grandes pode arredondar centavos a cada adição.
+        // Com até 100 itens válidos, a soma dos inteiros cabe em decimal e as frações são exatas.
+        var inteiros = 0m;
+        var fracoes = 0m;
+        foreach (var item in itens)
+        {
+            var subtotal = item.CalcularSubtotal();
+            var parteInteira = decimal.Truncate(subtotal);
+            inteiros += parteInteira;
+            fracoes += subtotal - parteInteira;
+        }
+
+        var inteirosDasFracoes = decimal.Truncate(fracoes);
+        inteiros += inteirosDasFracoes;
+        fracoes -= inteirosDasFracoes;
+        var total = inteiros + fracoes;
+        return (total, total - inteiros == fracoes);
     }
 
     public bool PodeSerAlterado()

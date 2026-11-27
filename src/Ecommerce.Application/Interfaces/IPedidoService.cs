@@ -7,7 +7,8 @@ public interface IPedidoService
 {
     Task<PedidoResponse> CriarAsync(CriarPedidoRequest request);
 
-    Task<ResultadoPaginadoResponse<PedidoResponse>> ListarAsync(PedidoFiltroRequest filtro);
+    Task<ResultadoPaginadoResponse<PedidoResponse>> ListarAsync(
+        PedidoFiltroRequest? filtro, CancellationToken cancellationToken = default);
 
     Task<PedidoResponse> BuscarPorIdAsync(Guid id);
 

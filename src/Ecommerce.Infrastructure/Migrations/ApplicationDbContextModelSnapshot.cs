@@ -142,6 +142,10 @@ namespace Ecommerce.Infrastructure.Migrations
                         .HasMaxLength(150)
                         .HasColumnType("nvarchar(150)");
 
+                    b.Property<string>("Perfil")
+                        .HasMaxLength(8)
+                        .HasColumnType("nvarchar(8)");
+
                     b.Property<string>("SenhaHash")
                         .IsRequired()
                         .HasMaxLength(500)
@@ -152,7 +156,10 @@ namespace Ecommerce.Infrastructure.Migrations
                     b.HasIndex("Email")
                         .IsUnique();
 
-                    b.ToTable("Usuarios");
+                    b.ToTable("Usuarios", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_Usuarios_Perfil", "[Perfil] COLLATE Latin1_General_100_BIN2 IN (N'Admin', N'Operator') AND DATALENGTH([Perfil]) = DATALENGTH(RTRIM([Perfil]))");
+                        });
                 });
 
             modelBuilder.Entity("Ecommerce.Domain.Entities.ItemPedido", b =>

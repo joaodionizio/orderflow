@@ -51,16 +51,28 @@ public class CompradorService : ICompradorService
         return MapearParaResponse(comprador);
     }
 
-    public async Task<List<CompradorResponse>> ListarAsync()
+    public async Task<ResultadoPaginadoResponse<CompradorResponse>> ListarAsync(
+        PaginacaoRequest? paginacao = null, CancellationToken cancellationToken = default)
     {
-        var compradores = await _context.Compradores
-            .AsNoTracking()
-            .OrderBy(comprador => comprador.Nome)
-            .ToListAsync();
+        var (pagina, tamanho, deslocamento) = (paginacao ?? new PaginacaoRequest()).Validar();
+        var query = _context.Compradores.AsNoTracking();
+        var totalItens = await query.LongCountAsync(cancellationToken);
 
-        return compradores
-            .Select(MapearParaResponse)
-            .ToList();
+        var compradores = await query
+            .OrderBy(comprador => comprador.Nome)
+            .ThenBy(comprador => comprador.Id)
+            .Skip(deslocamento)
+            .Take(tamanho)
+            .Select(comprador => new CompradorResponse
+            {
+                Id = comprador.Id,
+                Nome = comprador.Nome,
+                Email = comprador.Email,
+                DataCriacao = comprador.DataCriacao
+            })
+            .ToListAsync(cancellationToken);
+
+        return ResultadoPaginadoResponse<CompradorResponse>.Criar(compradores, pagina, tamanho, totalItens);
     }
 
     public async Task<CompradorResponse> BuscarPorIdAsync(Guid id)

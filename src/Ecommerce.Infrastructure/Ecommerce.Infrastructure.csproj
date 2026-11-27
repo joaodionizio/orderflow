@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Ecommerce.Domain\Ecommerce.Domain.csproj" />
     <ProjectReference Include="..\Ecommerce.Application\Ecommerce.Application.csproj" />
+    <InternalsVisibleTo Include="Ecommerce.Tests" />
   </ItemGroup>
 
   <ItemGroup>

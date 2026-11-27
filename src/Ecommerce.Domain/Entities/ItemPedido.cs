@@ -18,6 +18,7 @@ public class ItemPedido
 
     public decimal CalcularSubtotal()
     {
+        // Um preço decimal(18,2) multiplicado por um int cabe nos 96 bits do decimal com centavos.
         return PrecoUnitario * Quantidade;
     }
 }

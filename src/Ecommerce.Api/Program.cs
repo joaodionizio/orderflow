@@ -1,35 +1,71 @@
-using System.Text.Json;
-using System.Text;
+using Ecommerce.Api.Authorization;
+using Ecommerce.Api.Commands;
+using Ecommerce.Api.Health;
 using Ecommerce.Api.Middlewares;
+using Ecommerce.Api.OpenApi;
+using Ecommerce.Api.RateLimiting;
 using Ecommerce.Infrastructure;
+using Ecommerce.Infrastructure.Configuration;
 using Ecommerce.Infrastructure.Data;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 
-var builder = WebApplication.CreateBuilder(args);
+var provisionarAdmin = args.FirstOrDefault() == ProvisionarAdminCommand.Nome;
+if (provisionarAdmin && args.Length != 1)
+{
+    Console.Error.WriteLine("Execute provision-admin sem argumentos. Os dados são solicitados no terminal.");
+    Environment.ExitCode = 1;
+    return;
+}
 
+var builder = WebApplication.CreateBuilder(provisionarAdmin ? [] : args);
+
+var encaminhamento = provisionarAdmin ? null : TransporteHttp.Configurar(builder);
+var connectionString = SqlServerConfiguration.GetRequiredConnectionString(builder.Configuration);
+var jwt = JwtConfiguration.Load(builder.Configuration);
+
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = LimitesDeCorpo.Padrao);
+// Hospedagem, roteamento e MVC podem registrar URLs e argumentos fornecidos pelo cliente.
+builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
+builder.Logging.AddFilter("Microsoft.AspNetCore.Routing", LogLevel.Warning);
+builder.Logging.AddFilter("Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker", LogLevel.Warning);
+builder.Logging.AddFilter("Microsoft.AspNetCore.HttpOverrides", LogLevel.Warning);
+// Esses eventos podem carregar exceções de autenticação e detalhes do protocolo original.
+builder.Logging.AddFilter(typeof(JwtBearerHandler).FullName, LogLevel.None);
+builder.Logging.AddFilter("Microsoft.AspNetCore.Server.Kestrel.BadRequests", LogLevel.None);
+// Em .NET 8 o formatador pode registrar mensagens JSON com entrada do cliente em nível Debug.
+builder.Logging.AddFilter(typeof(SystemTextJsonInputFormatter).FullName, LogLevel.None);
+builder.Logging.AddFilter(DbLoggerCategory.Database.Name, LogLevel.Warning);
+builder.Logging.AddFilter(DbLoggerCategory.Database.Command.Name, LogLevel.None);
+builder.Logging.AddFilter(DbLoggerCategory.Query.Name, LogLevel.Warning);
+builder.Services.AddSingleton(jwt);
+builder.Services.AdicionarLimitesHttp(OpcoesDeLimites.Carregar(builder.Configuration));
 builder.Services.AddControllers(options =>
 {
+    options.Filters.Add<LimitesDeCorpo>();
     var mensagens = options.ModelBindingMessageProvider;
 
-    mensagens.SetAttemptedValueIsInvalidAccessor((valor, campo) =>
-        $"O valor '{valor}' não é válido para o campo {campo}.");
+    mensagens.SetAttemptedValueIsInvalidAccessor((_, campo) =>
+        $"O valor informado para o campo {campo} não é válido.");
     mensagens.SetMissingBindRequiredValueAccessor(campo =>
         $"O campo {campo} é obrigatório.");
     mensagens.SetMissingKeyOrValueAccessor(() =>
         "Valor obrigatório não informado.");
     mensagens.SetUnknownValueIsInvalidAccessor(campo =>
         $"O valor informado para o campo {campo} não é válido.");
-    mensagens.SetValueIsInvalidAccessor(valor =>
-        $"O valor '{valor}' não é válido.");
+    mensagens.SetValueIsInvalidAccessor(_ =>
+        "O valor informado não é válido.");
     mensagens.SetValueMustBeANumberAccessor(campo =>
         $"O campo {campo} deve ser um número.");
     mensagens.SetValueMustNotBeNullAccessor(_ =>
         "O campo é obrigatório.");
+}).AddJsonOptions(options =>
+{
+    options.JsonSerializerOptions.MaxDepth = LimitesDeCorpo.ProfundidadeJson;
+    options.AllowInputFormatterExceptionMessages = false;
 });
 builder.Services.Configure<ApiBehaviorOptions>(options =>
 {
@@ -43,6 +79,15 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
             Instance = context.HttpContext.Request.Path
         };
 
+        // O caminho de uma falha JSON pode conter um nome de propriedade enviado pelo cliente.
+        var caminhosJson = detalhes.Errors.Keys.Where(chave => chave.StartsWith('$')).ToArray();
+        if (caminhosJson.Length > 0)
+        {
+            foreach (var caminho in caminhosJson)
+                detalhes.Errors.Remove(caminho);
+            detalhes.Errors["$"] = ["O corpo JSON é inválido."];
+        }
+
         detalhes.Extensions["traceId"] = context.HttpContext.TraceIdentifier;
 
         return new BadRequestObjectResult(detalhes);
@@ -53,56 +98,44 @@ builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        var chave = builder.Configuration["Jwt:Chave"];
-
-        options.TokenValidationParameters = new TokenValidationParameters
+        options.MapInboundClaims = false;
+        options.IncludeErrorDetails = false;
+        options.TokenValidationParameters = jwt.CreateTokenValidationParameters();
+        options.Events = new JwtBearerEvents
         {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateIssuerSigningKey = true,
-            ValidateLifetime = true,
-            ValidIssuer = builder.Configuration["Jwt:Issuer"],
-            ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(chave!)),
-            ClockSkew = TimeSpan.Zero
+            OnTokenValidated = ValidacaoDeClaimsJwt.ValidarAsync
         };
     });
-builder.Services.AddAuthorization();
-builder.Services.AddSwaggerGen(options =>
+builder.Services.AddAuthorization(PoliticasDeAcesso.Configurar);
+if (builder.Environment.IsDevelopment())
 {
-    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    builder.Services.AddSwaggerGen(options =>
     {
-        Name = "Authorization",
-        Type = SecuritySchemeType.Http,
-        Scheme = "bearer",
-        BearerFormat = "JWT",
-        In = ParameterLocation.Header,
-        Description = "Informe o token JWT."
-    });
-
-    options.AddSecurityRequirement(new OpenApiSecurityRequirement
-    {
+        options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
         {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference
-                {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
-            },
-            []
-        }
-    });
-});
-builder.Services
-    .AddHealthChecks()
-    .AddSqlServer(
-        builder.Configuration.GetConnectionString("DefaultConnection")!,
-        name: "sqlserver");
-builder.Services.AddInfrastructure(builder.Configuration);
+            Name = "Authorization",
+            Type = SecuritySchemeType.Http,
+            Scheme = "bearer",
+            BearerFormat = "JWT",
+            In = ParameterLocation.Header,
+            Description = "Informe o token JWT."
+        });
 
-var app = builder.Build();
+        options.OperationFilter<AutorizacaoOperationFilter>();
+        options.OperationFilter<PaginacaoOperationFilter>();
+        options.SchemaFilter<ValidacaoDeEntradaSchemaFilter>();
+    });
+}
+builder.Services.AdicionarSondasDeSaude(connectionString);
+builder.Services.AddInfrastructure(connectionString);
+
+await using var app = builder.Build();
+
+if (provisionarAdmin)
+{
+    Environment.ExitCode = await ProvisionarAdminCommand.ExecutarAsync(app.Services);
+    return;
+}
 
 using (var scope = app.Services.CreateScope())
 {
@@ -110,7 +143,11 @@ using (var scope = app.Services.CreateScope())
     dbContext.Database.Migrate();
 }
 
+app.UsarTransporteSeguro(encaminhamento);
+app.UseRouting();
 app.UseMiddleware<ExceptionMiddleware>();
+app.UseRateLimiter();
+app.Use(LimitesHttp.LimitarFrequenciaAsync);
 
 if (app.Environment.IsDevelopment())
 {
@@ -118,31 +155,14 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
-
 app.UseAuthentication();
 app.UseAuthorization();
+app.Use(LimitesHttp.LimitarUsuarioAsync);
+app.Use(LimitesDeCorpo.VerificarAsync);
 
 app.MapControllers();
-app.MapHealthChecks("/health", new HealthCheckOptions
-{
-    ResponseWriter = async (context, report) =>
-    {
-        context.Response.ContentType = "application/json";
+app.MapearSondasDeSaude();
 
-        var response = new
-        {
-            status = report.Status.ToString(),
-            checks = report.Entries.Select(entry => new
-            {
-                name = entry.Key,
-                status = entry.Value.Status.ToString()
-            })
-        };
+await app.RunAsync();
 
-        await context.Response.WriteAsync(
-            JsonSerializer.Serialize(response));
-    }
-});
-
-app.Run();
+public partial class Program { }

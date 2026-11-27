@@ -7,7 +7,8 @@ public interface IProdutoService
 {
     Task<ProdutoResponse> CriarAsync(CriarProdutoRequest request);
 
-    Task<List<ProdutoResponse>> ListarAsync();
+    Task<ResultadoPaginadoResponse<ProdutoResponse>> ListarAsync(
+        PaginacaoRequest? paginacao = null, CancellationToken cancellationToken = default);
 
     Task<ProdutoResponse> BuscarPorIdAsync(Guid id);
 }

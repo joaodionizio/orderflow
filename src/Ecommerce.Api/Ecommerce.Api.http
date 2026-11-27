@@ -1,4 +1,5 @@
-@host = http://localhost:5115
+@host = https://localhost:7018
+@token = <token JWT>
 
 ### Health check
 GET {{host}}/health
@@ -6,6 +7,7 @@ GET {{host}}/health
 ### Criar comprador
 POST {{host}}/api/v1/compradores
 Content-Type: application/json
+Authorization: Bearer {{token}}
 
 {
   "nome": "Joao Luis",
@@ -13,11 +15,13 @@ Content-Type: application/json
 }
 
 ### Listar compradores
-GET {{host}}/api/v1/compradores
+GET {{host}}/api/v1/compradores?pagina=1&tamanhoPagina=20
+Authorization: Bearer {{token}}
 
 ### Criar produto
 POST {{host}}/api/v1/produtos
 Content-Type: application/json
+Authorization: Bearer {{token}}
 
 {
   "nome": "Teclado",
@@ -25,10 +29,13 @@ Content-Type: application/json
 }
 
 ### Listar produtos
-GET {{host}}/api/v1/produtos
+GET {{host}}/api/v1/produtos?pagina=2&tamanhoPagina=20
+Authorization: Bearer {{token}}
 
 ### Listar pedidos
 GET {{host}}/api/v1/pedidos
+Authorization: Bearer {{token}}
 
 ### Listar pedidos por status
-GET {{host}}/api/v1/pedidos?status=Iniciado
+GET {{host}}/api/v1/pedidos?pagina=1&tamanhoPagina=10&status=Iniciado
+Authorization: Bearer {{token}}

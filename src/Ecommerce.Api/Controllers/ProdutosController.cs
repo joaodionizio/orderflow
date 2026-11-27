@@ -1,4 +1,7 @@
+using Ecommerce.Api.Authorization;
+using Ecommerce.Api.Responses;
 using Ecommerce.Application.Dtos.Requests;
+using Ecommerce.Application.Dtos.Responses;
 using Ecommerce.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -6,7 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace Ecommerce.Api.Controllers;
 
 [ApiController]
-[Authorize]
+[Authorize(Policy = PoliticasDeAcesso.Operacao)]
 [Route("api/v1/produtos")]
 public class ProdutosController : ControllerBase
 {
@@ -18,6 +21,7 @@ public class ProdutosController : ControllerBase
     }
 
     [HttpPost]
+    [ProducesResponseType<ProdutoResponse>(StatusCodes.Status201Created)]
     public async Task<IActionResult> Criar(CriarProdutoRequest request)
     {
         var produto = await _produtoService.CriarAsync(request);
@@ -29,14 +33,19 @@ public class ProdutosController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> Listar()
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ResultadoPaginadoResponse<ProdutoResponse>>> Listar(
+        [FromQuery(Name = "")] PaginacaoRequest paginacao, CancellationToken cancellationToken)
     {
-        var produtos = await _produtoService.ListarAsync();
+        var produtos = await _produtoService.ListarAsync(paginacao, cancellationToken);
 
         return Ok(produtos);
     }
 
     [HttpGet("{id:guid}")]
+    [ProducesResponseType<ProdutoResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<MensagemDeErroResponse>(StatusCodes.Status404NotFound, "application/json")]
     public async Task<IActionResult> BuscarPorId(Guid id)
     {
         var produto = await _produtoService.BuscarPorIdAsync(id);
